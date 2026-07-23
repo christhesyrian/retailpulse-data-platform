@@ -3,7 +3,6 @@ import importlib.util
 import os
 import subprocess
 import sys
-import time
 import uuid
 
 from pydantic import ValidationError
@@ -11,6 +10,7 @@ from pydantic import ValidationError
 from retailpulse.config import Settings
 from retailpulse.extract.jobs import (
     extract_catalog,
+    extract_inventory,
     extract_locations,
     extract_orders,
     extract_payments,
@@ -109,6 +109,34 @@ def run_doctor() -> int:
     return 0 if ok else 1
 
 
+PRODUCTION_OPT_IN_ENV = "RETAILPULSE_ALLOW_PRODUCTION"
+
+
+def require_production_opt_in() -> None:
+    """Refuse to contact production unless the user has explicitly opted in.
+
+    Having a production token in .env is not enough — the operator must also
+    set RETAILPULSE_ALLOW_PRODUCTION=1 for that run. This makes hitting the
+    real store a deliberate act, never an accident from a leftover env value.
+    All operations remain read-only regardless; this is a blast-radius guard.
+    """
+    allowed = os.environ.get(PRODUCTION_OPT_IN_ENV, "").strip().lower() in {"1", "true", "yes"}
+    if not allowed:
+        print(
+            "REFUSING to run against PRODUCTION.\n"
+            "SQUARE_ENVIRONMENT=production, but this run is not opted in.\n"
+            f"All RetailPulse operations are read-only, but to proceed deliberately set "
+            f"{PRODUCTION_OPT_IN_ENV}=1 for this command, e.g.:\n"
+            f"    {PRODUCTION_OPT_IN_ENV}=1 retailpulse extract-all --days 7",
+            file=sys.stderr,
+        )
+        raise SystemExit(3)
+    print(
+        "NOTE: running against PRODUCTION (read-only). Raw output stays local and Git-ignored.",
+        file=sys.stderr,
+    )
+
+
 def _git_ignores(path: str) -> bool:
     try:
         result = subprocess.run(
@@ -136,12 +164,7 @@ def main() -> None:
         return
 
     if settings.is_production:
-        print(
-            "WARNING: SQUARE_ENVIRONMENT=production. This command will contact your "
-            "REAL Square account. Press Ctrl+C within 5 seconds to abort.",
-            file=sys.stderr,
-        )
-        time.sleep(5)
+        require_production_opt_in()
 
     try:
         with SquareClient(settings) as client:
@@ -170,10 +193,14 @@ def main() -> None:
             payment_pages = extract_payments(
                 client, settings.raw_data_dir, begin_time, end_time, run_id, environment
             )
+            inventory_pages = extract_inventory(
+                client, settings.raw_data_dir, locations, run_id, environment
+            )
             print(
                 "Extraction complete: "
                 f"run_id={run_id}, locations={len(locations)}, catalog_pages={catalog_pages}, "
-                f"order_pages={order_pages}, payment_pages={payment_pages}"
+                f"order_pages={order_pages}, payment_pages={payment_pages}, "
+                f"inventory_pages={inventory_pages}"
             )
     except (SquareAPIError, RuntimeError) as exc:
         print(str(exc), file=sys.stderr)
