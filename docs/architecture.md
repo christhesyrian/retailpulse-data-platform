@@ -4,9 +4,11 @@
 flowchart LR
     A[Square APIs] --> B[Python Extraction]
     B --> C[Bronze Raw JSON]
-    C --> D[Silver Normalized Tables]
-    D --> E[Gold Fact and Dimension Models]
-    E --> F[Dashboards and Forecasting]
+    C --> D[Silver Parquet lake]
+    D --> E[Gold facts & dimensions]
+    E --> K[KPI models + reconciliation]
+    K --> F[Streamlit dashboard]
+    K -.-> G[Forecasting - future]
 ```
 
 ## Layers
@@ -74,13 +76,36 @@ Run it with `make silver` or `retailpulse transform-silver`.
 - **Mart models** (`dbt/models/marts/*.sql`, materialized as tables in `data/gold/warehouse.duckdb`) implement `sql/warehouse_schema.sql`'s target grain: `dim_location`, `dim_item`, `fact_order_line`, `fact_payment`. Surrogate keys are generated with `row_number()` — small-scale and simple, appropriate for this data volume.
 - **24 dbt schema tests** cover not-null and uniqueness on every primary/surrogate key, plus `relationships` tests verifying every fact row's `location_key`/`item_key` actually resolves to a dimension row (nulls are allowed where source data doesn't have a matching catalog object, e.g. orphaned line items from a deleted catalog item).
 
-**Known limitation:** `dim_location`/`dim_item`'s `valid_from`/`valid_to`/`is_current` columns are placeholders matching `sql/warehouse_schema.sql`'s target shape — real SCD2 history tracking (dbt snapshots) isn't implemented yet; every row reflects only the current Silver snapshot. `fact_refund`, `fact_inventory_snapshot`, `dim_category`, and `dim_date` from the original schema are also not yet built — deferred to later milestones (refunds/inventory need Square endpoints RetailPulse doesn't extract yet).
+**Known limitation:** `dim_location`/`dim_item`'s `valid_from`/`valid_to`/`is_current` columns are placeholders matching `sql/warehouse_schema.sql`'s target shape — real SCD2 history tracking (dbt snapshots) isn't implemented yet; every row reflects only the current Silver snapshot. `fact_refund` and `fact_inventory_snapshot` from the original schema are also not yet built — deferred to later milestones (refunds/inventory need Square endpoints RetailPulse doesn't extract yet).
 
 Run it with `make dbt-build` (runs models + all tests) or `make dbt-docs` (generates dbt's documentation site).
 
-### Dashboards and Forecasting — not implemented (future work)
+### KPI models and reconciliation (implemented)
 
-KPI dashboard reconciled against Square's own reporting, followed by demand forecasting and reorder recommendations.
+`dbt/models/marts/dim_date.sql` is a calendar dimension built from a generated date spine over the span of order activity, so days with zero sales still appear (a gap day reads as 0, not a missing row).
+
+`dbt/models/marts/kpi/` holds the metric layer — the KPI *definitions* live here as tested, version-controlled SQL rather than being buried in the dashboard:
+
+- `kpi_summary` — single-row headline KPIs (net sales, orders, AOV, units/order, discounts, tax, fees, total collected).
+- `kpi_daily_sales` — per-day sales (left-joined from `dim_date` so zero days appear).
+- `kpi_sales_by_category`, `kpi_sales_by_weekday`, `kpi_sales_by_hour` — sales cut by product category, day of week, and hour of day.
+- `kpi_payment_methods` — amount collected and Square processing fees by tender type.
+
+A key semantic: **net sales = gross − discount, excluding tax** (fixed in Silver during M4). Tax is tracked separately; the tax-inclusive amount collected is `net_sales + tax`. Net sales is never described as profit — profit needs vendor cost data (M5).
+
+`rpt_order_payment_reconciliation` full-outer-joins order-level totals (`net_sales + tax`) against payment totals per `order_id`. `tests/assert_order_payment_reconciled.sql` fails the build if any order and payment both exist but disagree (`mismatch`). Orphaned orders/payments (one side missing — expected in the Sandbox after re-seeding) are surfaced but not failed on.
+
+**Internal vs. external reconciliation:** this is *internal* reconciliation — the pipeline agreeing with itself, which catches transformation bugs. Reconciling RetailPulse's totals against Square's own **Reporting API / Dashboard** figures (proving the extraction captured everything Square recorded) is a separate, stronger check that is deferred: the Reporting API is unreliable/limited in Sandbox, so a meaningful external reconciliation needs Production, which is out of scope for these milestones.
+
+### Streamlit dashboard (implemented)
+
+`dashboard/app.py` reads `data/gold/warehouse.duckdb` **read-only** and renders the KPI models: headline tiles, a daily-sales trend, category/weekday/hour breakdowns, payment-method mix, and a live reconciliation status banner. It contains no business SQL of its own — every figure is `select … from main_marts.kpi_*` — so the dashboard and the tested warehouse cannot drift apart. Streamlit is an optional (`dashboard`) dependency, kept out of the CI/pipeline dependency set; `scripts/smoke_dashboard_queries.py` guards the dashboard↔warehouse contract in CI without installing Streamlit.
+
+Run it with `make demo-data` (build the warehouse from synthetic data) then `make dashboard`.
+
+### Forecasting — not implemented (future work)
+
+Demand forecasting and reorder recommendations, on top of the KPI/Gold layer.
 
 ## Configuration and secrets
 

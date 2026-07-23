@@ -34,16 +34,31 @@ Implements [`sql/warehouse_schema.sql`](../sql/warehouse_schema.sql)'s target gr
 | `dim_item` | One row per catalog item variation | `item_key` (surrogate), `square_catalog_object_id`, `item_name`, `variation_name`, `category_name`, `sku`, `price_amount_cents`, `currency`, `valid_from/to`, `is_current` *(derived from Square's `is_deleted`)* |
 | `fact_order_line` | One row per order line item | `order_line_key` (surrogate), `square_order_id`, `square_line_item_uid`, `location_key`, `item_key`, `closed_at`, `quantity`, `gross_sales_cents`, `discount_cents`, `tax_cents`, `net_sales_cents` |
 | `fact_payment` | One row per payment | `square_payment_id` (primary key), `square_order_id`, `location_key`, `created_at`, `updated_at`, `status`, `source_type`, `amount_cents`, `processing_fee_cents`, `currency` |
+| `dim_date` | One row per calendar date | `date_day`, `date_key`, `year`, `month`, `month_name`, `day_of_month`, `day_of_week` (1=Mon..7=Sun), `day_name`, `week_of_year`, `is_weekend` |
 | `dim_category` *(future)* | One row per category | — |
-| `dim_date` *(future)* | One row per calendar date | — |
 | `fact_refund` *(future)* | One row per refund | — |
 | `fact_inventory_snapshot` *(future)* | One row per item variation, location, and snapshot time | — |
 
 Every surrogate key and natural key has a dbt `not_null`/`unique` test; every fact-to-dimension foreign key has a `relationships` test. See `dbt/models/marts/_marts.yml`.
 
+## KPI models (implemented — `dbt/models/marts/kpi/`)
+
+The metric layer, sourced only from the facts/dimensions above. Consumed by the Streamlit dashboard.
+
+| Model | Grain | Notes |
+|---|---|---|
+| `kpi_summary` | One row (overall) | Net sales, orders, AOV, units/order, discounts, tax, processing fees, total collected |
+| `kpi_daily_sales` | One row per calendar day | Left-joined from `dim_date`; zero-sales days appear as 0 |
+| `kpi_sales_by_category` | One row per category | Net sales, units, and share of total |
+| `kpi_sales_by_weekday` | One row per ISO weekday (1–7) | Net sales, orders, AOV |
+| `kpi_sales_by_hour` | One row per hour (0–23) | Net sales, orders |
+| `kpi_payment_methods` | One row per tender type | Amount collected, processing fees, share of total |
+| `rpt_order_payment_reconciliation` | One row per order id | Order total vs. paid, `variance_cents`, `reconciliation_status` |
+
 ## Conventions
 
 - Money is stored as integer cents until the presentation layer, matching Square's own representation.
+- **Net sales = gross − discount, EXCLUDING tax.** Tax is a separate column; the tax-inclusive amount collected is `net_sales_cents + tax_cents`, which is what the payment reconciliation checks against `fact_payment.amount_cents`.
 - All Square-issued IDs (`square_order_id`, `square_payment_id`, `square_catalog_object_id`, `square_location_id`) are preserved for lineage and deduplication.
 - Timestamps are UTC.
 - Net sales / revenue fields are never labeled or described as profit — profit requires vendor cost data, which is out of scope until M5.

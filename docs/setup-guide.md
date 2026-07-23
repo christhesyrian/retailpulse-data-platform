@@ -71,7 +71,26 @@ make silver
 make dbt-build
 ```
 
-`make silver` rebuilds `data/silver/*.parquet` from whatever's in `data/bronze/`. `make dbt-build` runs the dbt-duckdb project in `dbt/`, which reads those Parquet files directly as sources and builds `data/gold/warehouse.duckdb` (`dim_location`, `dim_item`, `fact_order_line`, `fact_payment`), running 24 schema tests along the way. Inspect it with `duckdb data/gold/warehouse.duckdb` and `SELECT * FROM main_marts.fact_order_line LIMIT 10;`.
+`make silver` rebuilds `data/silver/*.parquet` from whatever's in `data/bronze/`. `make dbt-build` runs the dbt-duckdb project in `dbt/`, which reads those Parquet files directly as sources and builds `data/gold/warehouse.duckdb` (dimensions, facts, and `kpi_*` models), running all schema tests plus the reconciliation test along the way. Inspect it with `duckdb data/gold/warehouse.duckdb` and `SELECT * FROM main_marts.kpi_summary;`.
+
+## 8. Launch the KPI dashboard
+
+```bash
+make dashboard
+```
+
+Opens the Streamlit dashboard at http://localhost:8501, reading the warehouse read-only. It shows headline KPIs, a daily-sales trend, category/weekday/hour breakdowns, payment-method mix, and a reconciliation status banner.
+
+### No Square account? Use synthetic demo data
+
+You can build the entire warehouse and dashboard without any Square credentials:
+
+```bash
+make demo-data    # synthetic Bronze -> Silver -> dbt Gold + KPIs (deterministic, fully fake)
+make dashboard
+```
+
+`make demo-data` runs `scripts/generate_synthetic_bronze.py`, which writes ~6 weeks of clearly-labeled fake orders/payments directly as Bronze JSON (no network, no Square). This is the same fixture CI uses.
 
 ## Troubleshooting
 

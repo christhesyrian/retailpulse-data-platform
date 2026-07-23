@@ -28,9 +28,11 @@ It's built against a real store on purpose: the data shapes, edge cases, and vol
 flowchart LR
     A[Square APIs] --> B[Python Extraction]
     B --> C[Bronze Raw JSON]
-    C --> D[Silver Normalized Tables]
-    D --> E[Gold Fact and Dimension Models]
-    E --> F[Dashboards and Forecasting]
+    C --> D[Silver Parquet lake]
+    D --> E[Gold facts & dimensions]
+    E --> K[KPI models + reconciliation]
+    K --> F[Streamlit dashboard]
+    K -.-> G[Forecasting - future]
 ```
 
 | Layer | Status | Description |
@@ -40,17 +42,23 @@ flowchart LR
 | Bronze Raw JSON | Implemented | Immutable, partitioned, local, Git-ignored |
 | Silver Normalized Tables | Implemented | Deduplicated, flattened Parquet files (the local "lake") rebuilt from Bronze JSON |
 | Gold Fact/Dimension Models | Implemented | `dbt-duckdb` models in `dbt/`, matching `sql/warehouse_schema.sql`'s target grain |
-| Dashboards and Forecasting | **Not implemented** — future work | KPI dashboard, demand forecasting |
+| KPI models + reconciliation | Implemented | Tested `kpi_*` dbt models; per-order payment reconciliation |
+| Dashboard | Implemented | Streamlit app reading the tested KPI models |
+| Forecasting | **Not implemented** — future work | Demand forecasting, reorder recommendations |
 
-## Current milestone: M3 — dbt dimensional models
+## Current milestone: M4 — KPI models, reconciliation, and dashboard
 
-M1 (Sandbox ingestion) and M2 (Silver normalization) are complete. M3 reads Silver Parquet files directly as dbt sources (via `dbt-duckdb`'s external-location pattern — no data is copied into the warehouse until a model materializes it), stages and types them, and builds `dim_location`, `dim_item`, `fact_order_line`, and `fact_payment` as DuckDB tables, with 24 dbt schema tests (not-null, uniqueness, referential integrity between facts and dimensions).
+M1–M3 (Sandbox ingestion → Silver normalization → dbt dimensional models) are complete. M4 adds the analytics layer on top of the Gold facts/dimensions:
 
-**Why DuckDB instead of a hosted warehouse:** DuckDB is a free, embedded, columnar OLAP database — no server, no account, no cost — and `dbt-duckdb` is an officially supported adapter. Reading Parquet directly off disk as the source layer is the same pattern real lakehouses use with S3 + Delta/Iceberg, just running locally. This keeps the project's warehouse layer genuinely representative of the modern data stack without requiring cloud credentials for a portfolio project.
+- **`dim_date`** and tested **KPI models** (`dbt/models/marts/kpi/`): daily sales, sales by category, by weekday, by hour, payment-method mix, and a single-row headline summary. Metric definitions live in version-controlled, tested SQL — not in the dashboard.
+- **Reconciliation** (`rpt_order_payment_reconciliation` + a dbt test): every order's recorded total (net sales + tax) is asserted to equal what was collected in payments, order by order. This is *internal* reconciliation (the pipeline agrees with itself); reconciling against Square's own Reporting API totals is production-only future work (documented in [`docs/architecture.md`](docs/architecture.md)).
+- **Streamlit dashboard** (`dashboard/app.py`): KPI tiles, daily sales trend, category/weekday/hour breakdowns, payment mix, and a live reconciliation status banner. It runs no business logic of its own — every number comes from a tested `kpi_*` model, so the dashboard and warehouse can't disagree.
+
+**Why DuckDB instead of a hosted warehouse:** DuckDB is a free, embedded, columnar OLAP database — no server, no account, no cost — and `dbt-duckdb` is an officially supported adapter. Reading Parquet directly off disk as the source layer is the same pattern real lakehouses use with S3 + Delta/Iceberg, just running locally. This keeps the warehouse layer genuinely representative of the modern data stack without requiring cloud credentials for a portfolio project.
 
 ## Technologies
 
-Python 3.11+, [httpx](https://www.python-httpx.org/) (HTTP client with retry/backoff), [pydantic](https://docs.pydantic.dev/) + [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) (typed, secret-aware configuration), [DuckDB](https://duckdb.org/) (embedded OLAP engine + Parquet I/O), [dbt-duckdb](https://github.com/duckdb/dbt-duckdb) (SQL transformation + testing), pytest + ruff (tests/lint), Square REST API `2026-07-15`.
+Python 3.11+, [httpx](https://www.python-httpx.org/) (HTTP client with retry/backoff), [pydantic](https://docs.pydantic.dev/) + [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) (typed, secret-aware configuration), [DuckDB](https://duckdb.org/) (embedded OLAP engine + Parquet I/O), [dbt-duckdb](https://github.com/duckdb/dbt-duckdb) (SQL transformation + testing), [Streamlit](https://streamlit.io/) (KPI dashboard), pytest + ruff (tests/lint), Square REST API `2026-07-15`.
 
 ## Data privacy strategy
 
@@ -93,7 +101,18 @@ data/silver/order_lines.parquet
 data/silver/payments.parquet
 ```
 
-Gold tables land in a local DuckDB database file, `data/gold/warehouse.duckdb` — open it with `duckdb data/gold/warehouse.duckdb` and query `main_marts.dim_location`, `main_marts.dim_item`, `main_marts.fact_order_line`, `main_marts.fact_payment` directly.
+Gold tables land in a local DuckDB database file, `data/gold/warehouse.duckdb` — open it with `duckdb data/gold/warehouse.duckdb` and query `main_marts.dim_location`, `main_marts.dim_item`, `main_marts.fact_order_line`, `main_marts.fact_payment`, or any `main_marts.kpi_*` model directly.
+
+### Dashboard
+
+To see the KPI dashboard without configuring Square at all, build the warehouse from synthetic demo data and launch Streamlit:
+
+```bash
+make demo-data    # synthetic Bronze -> Silver -> dbt Gold + KPIs (no Square needed)
+make dashboard    # opens the Streamlit dashboard at http://localhost:8501
+```
+
+`make demo-data` generates a deterministic ~6 weeks of fake orders/payments (clearly labeled synthetic — no real data), so the dashboard has something meaningful to show. To run it against your own Square Sandbox data instead, use `make extract-sandbox && make silver && make dbt-build` before `make dashboard`.
 
 ## What's complete
 
@@ -104,12 +123,13 @@ Gold tables land in a local DuckDB database file, `data/gold/warehouse.duckdb` �
 - [x] Unit tests for pagination, retry behavior, config secrecy, and storage immutability
 - [x] Local `make security-check` and credential-free GitHub Actions CI
 - [x] Silver normalization: dedup by Square object ID, catalog item/variation/category join, order line-item flattening, payment card-detail minimization, written as Parquet
-- [x] dbt-duckdb Gold layer: `dim_location`, `dim_item`, `fact_order_line`, `fact_payment` with 24 schema tests, built from Silver Parquet with no Square access needed
-- [x] Full-pipeline CI: synthetic Bronze fixture -> Silver -> dbt build, verified on every push with zero credentials
+- [x] dbt-duckdb Gold layer: `dim_location`, `dim_item`, `fact_order_line`, `fact_payment` with schema tests, built from Silver Parquet with no Square access needed
+- [x] KPI models (daily/category/weekday/hour/payment-mix/summary) and per-order payment reconciliation, all tested in dbt
+- [x] Streamlit KPI dashboard sourced entirely from the tested KPI models
+- [x] Full-pipeline CI: synthetic Bronze fixture -> Silver -> dbt build -> dashboard-query smoke test, verified on every push with zero credentials
 
 ## What's next
 
-- M4: KPI dashboard reconciled against Square's own reporting
 - M5: Inventory snapshots and vendor-cost ingestion for margin analysis
 - M6: Orchestration, observability, and cloud deployment
 - M7: Webhook-driven incremental ingestion
