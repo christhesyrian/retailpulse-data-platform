@@ -15,6 +15,9 @@ class FakeSettings:
         self.square_environment = environment
         self.square_base_url = "https://connect.squareupsandbox.com"
 
+    def require_token(self) -> SecretStr:
+        return self.square_access_token
+
 
 @pytest.fixture(autouse=True)
 def _no_real_sleep(monkeypatch):

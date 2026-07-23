@@ -1,14 +1,26 @@
 import pytest
-from pydantic import ValidationError
 
 from retailpulse.config import Settings
 
 
-def test_missing_token_raises_validation_error(monkeypatch, tmp_path):
+def test_missing_token_is_allowed_but_require_token_raises(monkeypatch, tmp_path):
+    # Local steps (transform-silver, dbt, dashboard) don't need a token, so
+    # Settings must construct fine without one...
     monkeypatch.delenv("SQUARE_ACCESS_TOKEN", raising=False)
     monkeypatch.chdir(tmp_path)  # no .env file here
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
+    settings = Settings(_env_file=None)
+    assert settings.has_token is False
+
+    # ...but any command that contacts Square must fail clearly.
+    with pytest.raises(RuntimeError, match="SQUARE_ACCESS_TOKEN is not set"):
+        settings.require_token()
+
+
+def test_require_token_returns_secret_when_present(monkeypatch):
+    monkeypatch.setenv("SQUARE_ACCESS_TOKEN", "fake-token")
+    settings = Settings(_env_file=None)
+    assert settings.has_token is True
+    assert settings.require_token().get_secret_value() == "fake-token"
 
 
 def test_token_never_appears_in_repr_or_str(monkeypatch):

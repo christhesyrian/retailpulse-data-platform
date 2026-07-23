@@ -183,6 +183,9 @@ def build_silver_order_lines(bronze_root: Path) -> list[dict[str, Any]]:
     rows = []
     for order in orders:
         for line in order.get("line_items", []):
+            gross = _amount(line.get("gross_sales_money"))
+            discount = _amount(line.get("total_discount_money"))
+            tax = _amount(line.get("total_tax_money"))
             rows.append(
                 {
                     "order_id": order.get("id"),
@@ -192,10 +195,14 @@ def build_silver_order_lines(bronze_root: Path) -> list[dict[str, Any]]:
                     "item_name": line.get("name"),
                     "variation_name": line.get("variation_name"),
                     "quantity": line.get("quantity"),
-                    "gross_sales_cents": _amount(line.get("gross_sales_money")),
-                    "discount_cents": _amount(line.get("total_discount_money")),
-                    "tax_cents": _amount(line.get("total_tax_money")),
-                    "net_sales_cents": _amount(line.get("total_money")),
+                    "gross_sales_cents": gross,
+                    "discount_cents": discount,
+                    "tax_cents": tax,
+                    # Net sales = gross - discount, EXCLUDING tax. Square's
+                    # line total_money includes tax; the tax-inclusive amount
+                    # collected is derivable as net_sales_cents + tax_cents
+                    # (used by the payment reconciliation model).
+                    "net_sales_cents": gross - discount,
                     "currency": (line.get("total_money") or {}).get("currency"),
                     "order_state": order.get("state"),
                     "order_created_at": order.get("created_at"),

@@ -138,10 +138,13 @@ def test_order_lines_flatten_multiple_line_items(tmp_path):
     assert row_a["gross_sales_cents"] == 2000
     assert row_a["discount_cents"] == 100
     assert row_a["tax_cents"] == 50
-    assert row_a["net_sales_cents"] == 1950
+    # Net sales excludes tax: gross (2000) - discount (100) = 1900,
+    # NOT total_money (1950, which includes the 50 tax).
+    assert row_a["net_sales_cents"] == 1900
     assert row_a["order_state"] == "COMPLETED"
     row_b = next(r for r in rows if r["line_item_uid"] == "line-b")
     assert row_b["discount_cents"] == 0  # absent in source -> defaults to 0, not a crash
+    assert row_b["net_sales_cents"] == 500  # gross 500 - discount 0
 
 
 def test_orders_dedupe_by_updated_at_regardless_of_file_order(tmp_path):

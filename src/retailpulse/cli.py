@@ -86,9 +86,9 @@ def run_doctor() -> int:
     if settings.is_production:
         print("WARNING: environment is set to PRODUCTION.")
 
-    token_configured = bool(settings.square_access_token.get_secret_value())
-    print(f"Square token configured: {token_configured}")
-    ok = ok and token_configured
+    print(f"Square token configured: {settings.has_token}")
+    # A missing token is not a doctor failure — local steps (transform-silver,
+    # dbt, dashboard) don't need one. It's only required to contact Square.
 
     raw_dir = settings.raw_data_dir
     try:

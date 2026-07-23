@@ -33,7 +33,7 @@ class SquareClient:
         self.client = httpx.Client(
             base_url=settings.square_base_url,
             headers={
-                "Authorization": f"Bearer {settings.square_access_token.get_secret_value()}",
+                "Authorization": f"Bearer {settings.require_token().get_secret_value()}",
                 "Square-Version": settings.square_api_version,
                 "Content-Type": "application/json",
                 "User-Agent": "retailpulse/0.1.0",
