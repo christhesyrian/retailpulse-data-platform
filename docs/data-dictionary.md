@@ -13,9 +13,20 @@ This documents the entities RetailPulse extracts and the target warehouse grain.
 
 Bronze preserves the Square response verbatim inside a `payload` key, alongside non-destructive `metadata` (source, entity, page number, extraction timestamp, run id, environment). See [`architecture.md`](architecture.md) for the exact envelope shape.
 
-## Target Silver/Gold warehouse grain
+## Silver (implemented — `data/silver/*.csv`, rebuilt from Bronze on every run)
 
-Defined in [`sql/warehouse_schema.sql`](../sql/warehouse_schema.sql) (not yet implemented — this documents the plan):
+| Table | Grain | Fields |
+|---|---|---|
+| `locations.csv` | One row per location | `location_id`, `name`, `status`, `timezone`, `currency`, `country`, `business_name`, `merchant_id`, `created_at` |
+| `catalog_items.csv` | One row per catalog item variation | `variation_id`, `item_id`, `item_name`, `variation_name`, `category_id`, `category_name`, `price_cents`, `currency`, `sku`, `is_deleted`, `updated_at` |
+| `order_lines.csv` | One row per order line item | `order_id`, `line_item_uid`, `location_id`, `catalog_object_id`, `item_name`, `variation_name`, `quantity`, `gross_sales_cents`, `discount_cents`, `tax_cents`, `net_sales_cents`, `currency`, `order_state`, `order_created_at`, `order_updated_at`, `closed_at` |
+| `payments.csv` | One row per payment | `payment_id`, `order_id`, `location_id`, `amount_cents`, `currency`, `status`, `source_type`, `card_brand`, `card_last_4`, `processing_fee_cents`, `created_at`, `updated_at` |
+
+`payments.csv` intentionally excludes card `fingerprint` and `bin` — those are dropped during normalization rather than carried forward from Bronze.
+
+## Target Gold warehouse grain
+
+Defined in [`sql/warehouse_schema.sql`](../sql/warehouse_schema.sql) (not yet implemented — planned for M3):
 
 | Table | Grain | Key fields |
 |---|---|---|

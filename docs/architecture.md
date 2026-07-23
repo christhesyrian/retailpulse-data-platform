@@ -50,9 +50,18 @@ data/bronze/square/<entity>/extracted_date=YYYY-MM-DD/page-00001-<timestamp>-<ru
 
 The filename embeds a per-run identifier, so two extraction runs never collide even within the same partition, and `write_raw_page` refuses to overwrite an existing path (`FileExistsError`). This directory is Git-ignored; it never leaves the local machine.
 
-### Silver Normalized Tables — not implemented (future work)
+### Silver Normalized Tables (implemented)
 
-Will deduplicate by Square object ID, flatten nested line items, and type/clean fields (e.g., money as integer cents, timestamps as UTC).
+`src/retailpulse/transform/silver.py` reads every Bronze JSON file for an entity (across every extraction run), deduplicates by the Square object's own `id`, and writes flattened CSV tables to `data/silver/`:
+
+- **`locations.csv`** — one row per location.
+- **`catalog_items.csv`** — one row per catalog item *variation*, joined against its parent `ITEM` and `CATEGORY` objects (Square's Catalog API returns these as separate flat objects; Silver resolves the `item_id`/`category_id` links). `category_name` is `null` when an item has no category assigned — this is reported honestly rather than guessed.
+- **`order_lines.csv`** — one row per order line item, flattening Square's nested `order.line_items[]` array. Money fields (`gross_sales_cents`, `discount_cents`, `tax_cents`, `net_sales_cents`) come straight from the line item's own computed totals.
+- **`payments.csv`** — one row per payment. Card details are **minimized**: only `card_brand` and `card_last_4` are kept; `fingerprint` and `bin` from the raw Bronze payload are dropped, since Silver is the layer future exports and dashboards read from.
+
+**Dedup rule:** for each Square object type, the record's own `updated_at` field (when present) determines which extraction run's snapshot wins, falling back to the Bronze `extracted_at` timestamp otherwise (locations don't carry their own `updated_at`). Since the same order/payment/catalog object is re-extracted on every run within its lookback window, this collapses N snapshots down to 1 current row per object — Silver is a rebuild, not an append: each `make silver` run regenerates the CSVs from scratch from whatever Bronze currently holds.
+
+Run it with `make silver` or `retailpulse transform-silver`.
 
 ### Gold Fact and Dimension Models — not implemented (future work)
 

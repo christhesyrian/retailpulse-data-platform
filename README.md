@@ -38,13 +38,13 @@ flowchart LR
 | Square APIs | Implemented (read-only) | Locations, Catalog, Orders, Payments |
 | Python Extraction | Implemented | Cursor-paginated, retrying, sandbox-only |
 | Bronze Raw JSON | Implemented | Immutable, partitioned, local, Git-ignored |
-| Silver Normalized Tables | **Not implemented** — future work | Deduplicated, typed tables from Bronze JSON |
+| Silver Normalized Tables | Implemented | Deduplicated, flattened CSV tables rebuilt from Bronze JSON |
 | Gold Fact/Dimension Models | **Not implemented** — future work | `sql/warehouse_schema.sql` documents the target grain |
 | Dashboards and Forecasting | **Not implemented** — future work | KPI dashboard, demand forecasting |
 
-## Current milestone: M1 — Secure Square Sandbox ingestion
+## Current milestone: M2 — Silver normalization
 
-Connect to Square **Sandbox** only, extract Locations/Catalog/Orders/Payments, write immutable raw JSON to a local Bronze layer, and push source code (never credentials or business data) to a private GitHub repository.
+M1 (secure Square Sandbox ingestion) is complete. M2 reads Bronze JSON, deduplicates each Square object by its own `updated_at` (falling back to extraction time), flattens nested structures (catalog item + variation + category joins; order line items), and writes clean CSV tables to `data/silver/` — never overwriting Bronze, always rebuilt from it.
 
 ## Technologies
 
@@ -72,12 +72,22 @@ make test
 make lint
 make security-check
 make extract-sandbox
+make silver
 ```
 
 Raw output lands under:
 
 ```text
 data/bronze/square/<entity>/extracted_date=YYYY-MM-DD/*.json
+```
+
+Silver tables land under:
+
+```text
+data/silver/locations.csv
+data/silver/catalog_items.csv
+data/silver/order_lines.csv
+data/silver/payments.csv
 ```
 
 ## What's complete
@@ -88,10 +98,10 @@ data/bronze/square/<entity>/extracted_date=YYYY-MM-DD/*.json
 - [x] Immutable, partitioned Bronze JSON storage with `run_id` + `environment` metadata
 - [x] Unit tests for pagination, retry behavior, config secrecy, and storage immutability
 - [x] Local `make security-check` and credential-free GitHub Actions CI
+- [x] Silver normalization: dedup by Square object ID, catalog item/variation/category join, order line-item flattening, payment card-detail minimization
 
 ## What's next
 
-- M2: Normalize Bronze JSON into Silver tables (dedup, typing, line-item flattening)
 - M3: Implement `sql/warehouse_schema.sql` as dbt models with tests
 - M4: KPI dashboard reconciled against Square's own reporting
 - M5: Inventory snapshots and vendor-cost ingestion for margin analysis
