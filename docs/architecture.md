@@ -3,10 +3,11 @@
 ```mermaid
 flowchart LR
     A[Square APIs] --> B[Python Extraction]
+    V[Vendor costs CSV] --> E
     B --> C[Bronze Raw JSON]
     C --> D[Silver Parquet lake]
     D --> E[Gold facts & dimensions]
-    E --> K[KPI models + reconciliation]
+    E --> K[KPI + margin + inventory models]
     K --> F[Streamlit dashboard]
     K -.-> G[Forecasting - future]
 ```
@@ -15,18 +16,21 @@ flowchart LR
 
 ### Square APIs (implemented, read-only)
 
-`src/retailpulse/square_client.py` calls four read-only Square REST endpoints:
+`src/retailpulse/square_client.py` calls read-only Square REST endpoints:
 
 - `GET /v2/locations`
 - `GET /v2/catalog/list`
 - `POST /v2/orders/search`
 - `GET /v2/payments`
+- `POST /v2/inventory/counts/batch-retrieve` (current endpoint; the older `/v2/inventory/batch-retrieve-counts` is deprecated)
 
 Requests carry `Authorization: Bearer <token>`, `Square-Version`, and a descriptive `User-Agent`. Transient failures (HTTP 429/500/502/503/504, and transport-level errors) are retried up to 5 attempts with exponential backoff and jitter, honoring `Retry-After` when Square sends it. Authentication and validation errors (4xx other than 429) fail immediately without retry, since retrying them cannot succeed.
 
+**Production safeguard:** `SQUARE_ENVIRONMENT` defaults to `sandbox`. Selecting `production` is not enough on its own — commands that contact Square refuse to run unless `RETAILPULSE_ALLOW_PRODUCTION=1` is also set for that invocation (`require_production_opt_in()` in the CLI, exit code 3 otherwise). All operations are read-only regardless; this is a blast-radius guard so a leftover env value can't silently hit the real store. See [`production-switch.md`](production-switch.md).
+
 ### Python Extraction (implemented)
 
-`src/retailpulse/extract/jobs.py` orchestrates one job per entity (locations, catalog, orders, payments), each following Square's cursor pagination until no `cursor` is returned, writing one raw page per API response.
+`src/retailpulse/extract/jobs.py` orchestrates one job per entity (locations, catalog, orders, payments, inventory), each following Square's cursor pagination until no `cursor` is returned, writing one raw page per API response.
 
 ### Bronze Raw JSON (implemented)
 
@@ -91,15 +95,23 @@ Run it with `make dbt-build` (runs models + all tests) or `make dbt-docs` (gener
 - `kpi_sales_by_category`, `kpi_sales_by_weekday`, `kpi_sales_by_hour` — sales cut by product category, day of week, and hour of day.
 - `kpi_payment_methods` — amount collected and Square processing fees by tender type.
 
-A key semantic: **net sales = gross − discount, excluding tax** (fixed in Silver during M4). Tax is tracked separately; the tax-inclusive amount collected is `net_sales + tax`. Net sales is never described as profit — profit needs vendor cost data (M5).
+A key semantic: **net sales = gross − discount, excluding tax** (fixed in Silver during M4). Tax is tracked separately; the tax-inclusive amount collected is `net_sales + tax`. Net sales is never described as profit — profit needs vendor cost data (added in M5, below).
 
 `rpt_order_payment_reconciliation` full-outer-joins order-level totals (`net_sales + tax`) against payment totals per `order_id`. `tests/assert_order_payment_reconciled.sql` fails the build if any order and payment both exist but disagree (`mismatch`). Orphaned orders/payments (one side missing — expected in the Sandbox after re-seeding) are surfaced but not failed on.
 
 **Internal vs. external reconciliation:** this is *internal* reconciliation — the pipeline agreeing with itself, which catches transformation bugs. Reconciling RetailPulse's totals against Square's own **Reporting API / Dashboard** figures (proving the extraction captured everything Square recorded) is a separate, stronger check that is deferred: the Reporting API is unreliable/limited in Sandbox, so a meaningful external reconciliation needs Production, which is out of scope for these milestones.
 
+### Vendor costs, gross margin, and inventory (M5, implemented)
+
+**Inventory.** `extract_inventory` pulls current IN_STOCK counts (read-only). Silver dedupes them per `(variation, location, state)` by `calculated_at` → `inventory_snapshots.parquet` → `fact_inventory_snapshot` (grained one row per variation/location/snapshot time). `kpi_inventory_position` joins on-hand to trailing-30-day sales velocity to estimate days-of-inventory and a fixed-threshold reorder signal (`reorder_soon` / `watch` / `ok` / `no_recent_sales`). The learned, forecast-driven version of this is deferred to M9.
+
+**Vendor costs.** Acquisition costs are **not** in Square — they are operator-maintained reference data at `data/input/vendor_costs.csv` (Git-ignored; real cost data is business-sensitive and never committed). dbt reads the CSV directly as a `reference` source via `read_csv`; `scripts/generate_synthetic_vendor_costs.py` builds it from the Silver catalog (synthetic costs for demo/CI, or a fill-in template against a real catalog). `dim_vendor` is derived from it.
+
+**Gross margin — the move from revenue to profit.** `fact_order_line_margin` left-joins order lines to vendor costs and computes `cogs = unit_cost × quantity` and `gross_profit = net_sales − cogs`, with `gross_margin_pct`. Cost coverage is explicit: when a line's variation has no cost on file, `cogs`/`gross_profit`/`gross_margin_pct` are **NULL** (not zero) and `has_cost` is false. The margin KPIs (`kpi_margin_by_category`, `kpi_margin_by_vendor`, and the margin fields in `kpi_summary`) aggregate only costed lines and report `cost_coverage_pct`, so a partially-costed catalog understates coverage rather than silently inflating margin. This is the first layer where the project reports **profit**; it still requires the operator's cost data and is never derived from Square alone.
+
 ### Streamlit dashboard (implemented)
 
-`dashboard/app.py` reads `data/gold/warehouse.duckdb` **read-only** and renders the KPI models: headline tiles, a daily-sales trend, category/weekday/hour breakdowns, payment-method mix, and a live reconciliation status banner. It contains no business SQL of its own — every figure is `select … from main_marts.kpi_*` — so the dashboard and the tested warehouse cannot drift apart. Streamlit is an optional (`dashboard`) dependency, kept out of the CI/pipeline dependency set; `scripts/smoke_dashboard_queries.py` guards the dashboard↔warehouse contract in CI without installing Streamlit.
+`dashboard/app.py` reads `data/gold/warehouse.duckdb` **read-only** and renders the KPI models: headline tiles (including COGS / gross profit / margin / cost coverage), a daily-sales trend, category/weekday/hour breakdowns, payment-method mix, a live reconciliation status banner, gross-profit-by-category, and an inventory-position table with reorder flags. It contains no business SQL of its own — every figure is `select … from main_marts.kpi_*` — so the dashboard and the tested warehouse cannot drift apart. Streamlit is an optional (`dashboard`) dependency, kept out of the CI/pipeline dependency set; `scripts/smoke_dashboard_queries.py` guards the dashboard↔warehouse contract in CI without installing Streamlit.
 
 Run it with `make demo-data` (build the warehouse from synthetic data) then `make dashboard`.
 

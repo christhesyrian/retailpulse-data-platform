@@ -21,6 +21,7 @@ Bronze JSON under `data/bronze/` is the *unmodified* API response. Depending on 
 
 - `.env` or any file containing a real Square access token
 - Raw Square API responses (`data/bronze/**`, `data/silver/**`, `data/gold/**`)
+- Vendor/acquisition cost data (`data/input/**`) — real supplier pricing is business-sensitive
 - Real customer, employee, or vendor names, emails, phone numbers, or payment identifiers
 - Screenshots that reveal a token, authorization header, or unredacted business data
 - Production credentials, in code, CI, or GitHub Actions secrets, during this milestone

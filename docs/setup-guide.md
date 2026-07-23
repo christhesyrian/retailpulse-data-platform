@@ -73,6 +73,16 @@ make dbt-build
 
 `make silver` rebuilds `data/silver/*.parquet` from whatever's in `data/bronze/`. `make dbt-build` runs the dbt-duckdb project in `dbt/`, which reads those Parquet files directly as sources and builds `data/gold/warehouse.duckdb` (dimensions, facts, and `kpi_*` models), running all schema tests plus the reconciliation test along the way. Inspect it with `duckdb data/gold/warehouse.duckdb` and `SELECT * FROM main_marts.kpi_summary;`.
 
+### Vendor costs (optional — enables gross-margin KPIs)
+
+Gross profit needs acquisition costs, which are not in Square. Provide them at `data/input/vendor_costs.csv` (Git-ignored). To bootstrap it from your current catalog:
+
+```bash
+python3 scripts/generate_synthetic_vendor_costs.py
+```
+
+This lists every variation with a synthetic cost and vendor — edit `unit_cost_cents`/`vendor_name` with your real figures, then re-run `make dbt-build`. Without this file the pipeline still runs; margin KPIs simply show no cost coverage.
+
 ## 8. Launch the KPI dashboard
 
 ```bash

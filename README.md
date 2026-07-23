@@ -27,28 +27,35 @@ It's built against a real store on purpose: the data shapes, edge cases, and vol
 ```mermaid
 flowchart LR
     A[Square APIs] --> B[Python Extraction]
+    V[Vendor costs CSV] --> E
     B --> C[Bronze Raw JSON]
     C --> D[Silver Parquet lake]
     D --> E[Gold facts & dimensions]
-    E --> K[KPI models + reconciliation]
+    E --> K[KPI + margin + inventory models]
     K --> F[Streamlit dashboard]
     K -.-> G[Forecasting - future]
 ```
 
 | Layer | Status | Description |
 |---|---|---|
-| Square APIs | Implemented (read-only) | Locations, Catalog, Orders, Payments |
-| Python Extraction | Implemented | Cursor-paginated, retrying, sandbox-only |
+| Square APIs | Implemented (read-only) | Locations, Catalog, Orders, Payments, Inventory |
+| Python Extraction | Implemented | Cursor-paginated, retrying, Sandbox by default (explicit opt-in for production) |
 | Bronze Raw JSON | Implemented | Immutable, partitioned, local, Git-ignored |
 | Silver Normalized Tables | Implemented | Deduplicated, flattened Parquet files (the local "lake") rebuilt from Bronze JSON |
 | Gold Fact/Dimension Models | Implemented | `dbt-duckdb` models in `dbt/`, matching `sql/warehouse_schema.sql`'s target grain |
-| KPI models + reconciliation | Implemented | Tested `kpi_*` dbt models; per-order payment reconciliation |
+| KPI + margin + inventory | Implemented | Tested `kpi_*` models; payment reconciliation; gross-margin & inventory-position |
 | Dashboard | Implemented | Streamlit app reading the tested KPI models |
 | Forecasting | **Not implemented** — future work | Demand forecasting, reorder recommendations |
 
-## Current milestone: M4 — KPI models, reconciliation, and dashboard
+## Current milestone: M5 — inventory snapshots and vendor costs (gross margin)
 
-M1–M3 (Sandbox ingestion → Silver normalization → dbt dimensional models) are complete. M4 adds the analytics layer on top of the Gold facts/dimensions:
+M1–M4 are complete. M5 adds the two things needed to move from *revenue* to *profit* analysis:
+
+- **Inventory snapshots**: read-only extraction of Square inventory counts (`POST /v2/inventory/counts/batch-retrieve`) → `fact_inventory_snapshot`, plus a `kpi_inventory_position` model with days-of-inventory and a reorder signal.
+- **Vendor costs → gross margin**: vendor/acquisition costs are an operator-maintained input (a Git-ignored `data/input/vendor_costs.csv` — real cost data is never committed). `fact_order_line_margin` joins them to order lines to compute **COGS and gross profit** (`gross_profit = net_sales − COGS`), with `kpi_margin_by_category` / `kpi_margin_by_vendor`. Margin is only computed where a cost is on file (`has_cost`), and coverage is reported — profit is never fabricated from missing costs.
+- **Production safeguard**: contacting production now requires an explicit `RETAILPULSE_ALLOW_PRODUCTION=1` opt-in per command, so a real store can't be hit by accident. See [`docs/production-switch.md`](docs/production-switch.md) for the read-only production-validation guide.
+
+### Earlier milestone — M4: KPI models, reconciliation, and dashboard
 
 - **`dim_date`** and tested **KPI models** (`dbt/models/marts/kpi/`): daily sales, sales by category, by weekday, by hour, payment-method mix, and a single-row headline summary. Metric definitions live in version-controlled, tested SQL — not in the dashboard.
 - **Reconciliation** (`rpt_order_payment_reconciliation` + a dbt test): every order's recorded total (net sales + tax) is asserted to equal what was collected in payments, order by order. This is *internal* reconciliation (the pipeline agrees with itself); reconciling against Square's own Reporting API totals is production-only future work (documented in [`docs/architecture.md`](docs/architecture.md)).
@@ -112,27 +119,35 @@ make demo-data    # synthetic Bronze -> Silver -> dbt Gold + KPIs (no Square nee
 make dashboard    # opens the Streamlit dashboard at http://localhost:8501
 ```
 
-`make demo-data` generates a deterministic ~6 weeks of fake orders/payments (clearly labeled synthetic — no real data), so the dashboard has something meaningful to show. To run it against your own Square Sandbox data instead, use `make extract-sandbox && make silver && make dbt-build` before `make dashboard`.
+`make demo-data` generates a deterministic ~6 weeks of fake orders/payments/inventory **and** synthetic vendor costs (clearly labeled synthetic — no real data), so the dashboard has margins and inventory to show. To run it against your own Square Sandbox data instead, use `make extract-sandbox && make silver && make dbt-build` before `make dashboard`.
+
+### Vendor costs (for gross-margin analysis)
+
+Vendor/acquisition costs are **not** in Square — they're an operator-maintained input at `data/input/vendor_costs.csv` (Git-ignored; real cost data is never committed). Generate a synthetic one, or a fill-in template from your real catalog:
+
+```bash
+python3 scripts/generate_synthetic_vendor_costs.py   # reads data/silver/catalog_items.parquet
+```
+
+Edit `unit_cost_cents` / `vendor_name` with your real figures, then `make dbt-build` to recompute margins. Lines with no cost on file show up honestly as "no cost" rather than zero-cost.
 
 ## What's complete
 
 - [x] Secure configuration (`SecretStr` token, `.env` Git-ignored, no secret in logs/errors)
-- [x] Square Sandbox client with cursor pagination, timeouts, and bounded retry/backoff for transient errors
+- [x] Square client with cursor pagination, timeouts, and bounded retry/backoff; Sandbox by default with an explicit production opt-in
 - [x] `retailpulse doctor` / `retailpulse check` diagnostics that never reveal the token
 - [x] Immutable, partitioned Bronze JSON storage with `run_id` + `environment` metadata
-- [x] Unit tests for pagination, retry behavior, config secrecy, and storage immutability
-- [x] Local `make security-check` and credential-free GitHub Actions CI
-- [x] Silver normalization: dedup by Square object ID, catalog item/variation/category join, order line-item flattening, payment card-detail minimization, written as Parquet
-- [x] dbt-duckdb Gold layer: `dim_location`, `dim_item`, `fact_order_line`, `fact_payment` with schema tests, built from Silver Parquet with no Square access needed
-- [x] KPI models (daily/category/weekday/hour/payment-mix/summary) and per-order payment reconciliation, all tested in dbt
-- [x] Streamlit KPI dashboard sourced entirely from the tested KPI models
-- [x] Full-pipeline CI: synthetic Bronze fixture -> Silver -> dbt build -> dashboard-query smoke test, verified on every push with zero credentials
+- [x] Read-only extraction of locations, catalog, orders, payments, and inventory counts
+- [x] Silver normalization written as Parquet (dedup, catalog join, line-item flattening, card-detail minimization, inventory snapshots)
+- [x] dbt-duckdb Gold layer: dimensions, facts, KPI + reconciliation + gross-margin + inventory-position models, all with schema tests
+- [x] Gross profit / margin from operator-maintained vendor costs (COGS, `gross_profit = net_sales − COGS`, coverage reported)
+- [x] Streamlit dashboard (sales, margin, inventory) sourced entirely from the tested KPI models
+- [x] Local `make security-check` and full-pipeline CI (synthetic data → Silver → dbt build → dashboard smoke test) with zero credentials
 
 ## What's next
 
-- M5: Inventory snapshots and vendor-cost ingestion for margin analysis
 - M6: Orchestration, observability, and cloud deployment
 - M7: Webhook-driven incremental ingestion
-- M8: Demand forecasting and reorder recommendations
+- M8/M9: Demand forecasting and reorder recommendations
 
-See [`docs/project-charter.md`](docs/project-charter.md) for the full project charter and [`docs/data-dictionary.md`](docs/data-dictionary.md) for expected entity fields.
+See [`docs/project-charter.md`](docs/project-charter.md) for the full charter, [`docs/data-dictionary.md`](docs/data-dictionary.md) for the model reference, and [`docs/production-switch.md`](docs/production-switch.md) to validate on your real store's data.
