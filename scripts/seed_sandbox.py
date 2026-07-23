@@ -118,7 +118,7 @@ def _create_items(client: httpx.Client, category_ids: dict[str, str]) -> list[st
                 "type": "ITEM",
                 "item_data": {
                     "name": item_name,
-                    "category_id": category_ids[category],
+                    "categories": [{"id": category_ids[category]}],
                     "variations": [
                         {
                             "id": f"{temp_item_id}-var",

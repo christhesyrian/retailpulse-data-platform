@@ -1,4 +1,4 @@
-.PHONY: install check doctor extract-sandbox seed-sandbox test lint security-check
+.PHONY: install check doctor extract-sandbox seed-sandbox silver test lint security-check
 
 install:
 	python3 -m venv .venv
@@ -15,6 +15,9 @@ extract-sandbox:
 
 seed-sandbox:
 	. .venv/bin/activate && python3 scripts/seed_sandbox.py
+
+silver:
+	. .venv/bin/activate && retailpulse transform-silver
 
 test:
 	. .venv/bin/activate && pytest -q

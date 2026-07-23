@@ -17,6 +17,7 @@ from retailpulse.extract.jobs import (
     utc_window,
 )
 from retailpulse.square_client import SquareAPIError, SquareClient
+from retailpulse.transform.silver import run_silver_transform
 
 MAX_EXTRACT_DAYS = 90
 
@@ -35,6 +36,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=7,
         help=f"Lookback window in days (1-{MAX_EXTRACT_DAYS}).",
+    )
+
+    subparsers.add_parser(
+        "transform-silver", help="Normalize Bronze JSON into deduplicated Silver CSV tables."
     )
     return parser
 
@@ -123,6 +128,12 @@ def main() -> None:
         raise SystemExit(run_doctor())
 
     settings = load_settings()
+
+    if args.command == "transform-silver":
+        silver_root = settings.raw_data_dir.parent / "silver"
+        counts = run_silver_transform(settings.raw_data_dir, silver_root)
+        print("Silver transform complete: " + ", ".join(f"{k}={v}" for k, v in counts.items()))
+        return
 
     if settings.is_production:
         print(
