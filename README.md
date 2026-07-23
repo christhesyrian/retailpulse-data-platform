@@ -38,17 +38,19 @@ flowchart LR
 | Square APIs | Implemented (read-only) | Locations, Catalog, Orders, Payments |
 | Python Extraction | Implemented | Cursor-paginated, retrying, sandbox-only |
 | Bronze Raw JSON | Implemented | Immutable, partitioned, local, Git-ignored |
-| Silver Normalized Tables | Implemented | Deduplicated, flattened CSV tables rebuilt from Bronze JSON |
-| Gold Fact/Dimension Models | **Not implemented** — future work | `sql/warehouse_schema.sql` documents the target grain |
+| Silver Normalized Tables | Implemented | Deduplicated, flattened Parquet files (the local "lake") rebuilt from Bronze JSON |
+| Gold Fact/Dimension Models | Implemented | `dbt-duckdb` models in `dbt/`, matching `sql/warehouse_schema.sql`'s target grain |
 | Dashboards and Forecasting | **Not implemented** — future work | KPI dashboard, demand forecasting |
 
-## Current milestone: M2 — Silver normalization
+## Current milestone: M3 — dbt dimensional models
 
-M1 (secure Square Sandbox ingestion) is complete. M2 reads Bronze JSON, deduplicates each Square object by its own `updated_at` (falling back to extraction time), flattens nested structures (catalog item + variation + category joins; order line items), and writes clean CSV tables to `data/silver/` — never overwriting Bronze, always rebuilt from it.
+M1 (Sandbox ingestion) and M2 (Silver normalization) are complete. M3 reads Silver Parquet files directly as dbt sources (via `dbt-duckdb`'s external-location pattern — no data is copied into the warehouse until a model materializes it), stages and types them, and builds `dim_location`, `dim_item`, `fact_order_line`, and `fact_payment` as DuckDB tables, with 24 dbt schema tests (not-null, uniqueness, referential integrity between facts and dimensions).
+
+**Why DuckDB instead of a hosted warehouse:** DuckDB is a free, embedded, columnar OLAP database — no server, no account, no cost — and `dbt-duckdb` is an officially supported adapter. Reading Parquet directly off disk as the source layer is the same pattern real lakehouses use with S3 + Delta/Iceberg, just running locally. This keeps the project's warehouse layer genuinely representative of the modern data stack without requiring cloud credentials for a portfolio project.
 
 ## Technologies
 
-Python 3.11+, [httpx](https://www.python-httpx.org/) (HTTP client with retry/backoff), [pydantic](https://docs.pydantic.dev/) + [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) (typed, secret-aware configuration), pytest + ruff (tests/lint), Square REST API `2026-07-15`.
+Python 3.11+, [httpx](https://www.python-httpx.org/) (HTTP client with retry/backoff), [pydantic](https://docs.pydantic.dev/) + [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) (typed, secret-aware configuration), [DuckDB](https://duckdb.org/) (embedded OLAP engine + Parquet I/O), [dbt-duckdb](https://github.com/duckdb/dbt-duckdb) (SQL transformation + testing), pytest + ruff (tests/lint), Square REST API `2026-07-15`.
 
 ## Data privacy strategy
 
@@ -73,6 +75,7 @@ make lint
 make security-check
 make extract-sandbox
 make silver
+make dbt-build
 ```
 
 Raw output lands under:
@@ -81,14 +84,16 @@ Raw output lands under:
 data/bronze/square/<entity>/extracted_date=YYYY-MM-DD/*.json
 ```
 
-Silver tables land under:
+Silver tables (the local lake) land under:
 
 ```text
-data/silver/locations.csv
-data/silver/catalog_items.csv
-data/silver/order_lines.csv
-data/silver/payments.csv
+data/silver/locations.parquet
+data/silver/catalog_items.parquet
+data/silver/order_lines.parquet
+data/silver/payments.parquet
 ```
+
+Gold tables land in a local DuckDB database file, `data/gold/warehouse.duckdb` — open it with `duckdb data/gold/warehouse.duckdb` and query `main_marts.dim_location`, `main_marts.dim_item`, `main_marts.fact_order_line`, `main_marts.fact_payment` directly.
 
 ## What's complete
 
@@ -98,11 +103,12 @@ data/silver/payments.csv
 - [x] Immutable, partitioned Bronze JSON storage with `run_id` + `environment` metadata
 - [x] Unit tests for pagination, retry behavior, config secrecy, and storage immutability
 - [x] Local `make security-check` and credential-free GitHub Actions CI
-- [x] Silver normalization: dedup by Square object ID, catalog item/variation/category join, order line-item flattening, payment card-detail minimization
+- [x] Silver normalization: dedup by Square object ID, catalog item/variation/category join, order line-item flattening, payment card-detail minimization, written as Parquet
+- [x] dbt-duckdb Gold layer: `dim_location`, `dim_item`, `fact_order_line`, `fact_payment` with 24 schema tests, built from Silver Parquet with no Square access needed
+- [x] Full-pipeline CI: synthetic Bronze fixture -> Silver -> dbt build, verified on every push with zero credentials
 
 ## What's next
 
-- M3: Implement `sql/warehouse_schema.sql` as dbt models with tests
 - M4: KPI dashboard reconciled against Square's own reporting
 - M5: Inventory snapshots and vendor-cost ingestion for margin analysis
 - M6: Orchestration, observability, and cloud deployment

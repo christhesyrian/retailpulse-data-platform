@@ -1,4 +1,10 @@
--- RetailPulse target dimensional model. Implement in dbt after Bronze extraction is validated.
+-- RetailPulse target dimensional model. Implemented as dbt models in
+-- dbt/models/marts/ (dim_location, dim_item, fact_order_line, fact_payment).
+-- This file remains the reference DDL/grain definition; dbt/models/marts/
+-- is the source of truth for actual column/type decisions, which may
+-- differ slightly (e.g. surrogate keys generated via row_number()).
+-- dim_category, dim_date, fact_refund, and fact_inventory_snapshot below
+-- are not yet implemented in dbt.
 
 create table if not exists dim_location (
     location_key bigint generated always as identity primary key,

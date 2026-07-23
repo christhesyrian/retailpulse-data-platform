@@ -64,6 +64,15 @@ make extract-sandbox
 
 Extracts the last 7 days of locations, catalog, orders, and payments into `data/bronze/`. Running it again does not overwrite the previous run's files — each run gets its own `run_id`.
 
+## 7. Normalize to Silver and build the Gold warehouse
+
+```bash
+make silver
+make dbt-build
+```
+
+`make silver` rebuilds `data/silver/*.parquet` from whatever's in `data/bronze/`. `make dbt-build` runs the dbt-duckdb project in `dbt/`, which reads those Parquet files directly as sources and builds `data/gold/warehouse.duckdb` (`dim_location`, `dim_item`, `fact_order_line`, `fact_payment`), running 24 schema tests along the way. Inspect it with `duckdb data/gold/warehouse.duckdb` and `SELECT * FROM main_marts.fact_order_line LIMIT 10;`.
+
 ## Troubleshooting
 
 **`Configuration error. Copy .env.example to .env and add your token.`**
