@@ -79,6 +79,28 @@ def test_iter_orders_follows_cursor_and_yields_final_page():
     assert [p["orders"][0]["id"] for p in pages] == ["o-1", "o-2", "o-3"]
 
 
+def test_iter_inventory_counts_follows_cursor():
+    responses = [
+        httpx.Response(200, json={"counts": [{"catalog_object_id": "v1", "quantity": "5"}],
+                                  "cursor": "next"}),
+        httpx.Response(200, json={"counts": [{"catalog_object_id": "v2", "quantity": "3"}]}),
+    ]
+    captured = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return responses.pop(0)
+
+    with _client(handler) as client:
+        pages = list(client.iter_inventory_counts(["loc-1"]))
+
+    assert len(pages) == 2
+    assert pages[0]["counts"][0]["catalog_object_id"] == "v1"
+    assert pages[1]["counts"][0]["catalog_object_id"] == "v2"
+    # Correct current endpoint (not the deprecated one).
+    assert captured[0].url.path == "/v2/inventory/counts/batch-retrieve"
+
+
 def test_cursor_not_reused_between_independent_runs():
     def handler(request: httpx.Request) -> httpx.Response:
         assert "cursor" not in (request.url.params or {})

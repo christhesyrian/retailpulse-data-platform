@@ -5,6 +5,7 @@ import duckdb
 from retailpulse.storage import write_raw_page
 from retailpulse.transform.silver import (
     build_silver_catalog_items,
+    build_silver_inventory,
     build_silver_order_lines,
     build_silver_payments,
     build_silver_locations,
@@ -206,6 +207,50 @@ def test_payments_minimize_card_pii(tmp_path):
     assert not any("secret" in str(v) for v in row.values())
 
 
+def test_inventory_dedup_keeps_latest_by_calculated_at(tmp_path):
+    stale = {
+        "counts": [{
+            "catalog_object_id": "var-1", "catalog_object_type": "ITEM_VARIATION",
+            "location_id": "loc-1", "state": "IN_STOCK", "quantity": "10",
+            "calculated_at": "2026-07-23T00:00:00Z",
+        }]
+    }
+    fresh = {
+        "counts": [{
+            "catalog_object_id": "var-1", "catalog_object_type": "ITEM_VARIATION",
+            "location_id": "loc-1", "state": "IN_STOCK", "quantity": "3",
+            "calculated_at": "2026-07-23T06:00:00Z",
+        }]
+    }
+    # Write fresh first, stale second — dedup must go by calculated_at, not order.
+    _write(tmp_path, "inventory", fresh, run_id="run-b", extracted_at=T2)
+    _write(tmp_path, "inventory", stale, run_id="run-a", extracted_at=T1)
+
+    rows = build_silver_inventory(tmp_path)
+
+    assert len(rows) == 1
+    assert rows[0]["quantity"] == 3.0  # latest count, and typed as a number
+    assert rows[0]["catalog_object_id"] == "var-1"
+
+
+def test_inventory_composite_key_keeps_separate_locations(tmp_path):
+    payload = {
+        "counts": [
+            {"catalog_object_id": "var-1", "location_id": "loc-1", "state": "IN_STOCK",
+             "quantity": "5", "calculated_at": "2026-07-23T00:00:00Z"},
+            {"catalog_object_id": "var-1", "location_id": "loc-2", "state": "IN_STOCK",
+             "quantity": "9", "calculated_at": "2026-07-23T00:00:00Z"},
+        ]
+    }
+    _write(tmp_path, "inventory", payload, run_id="run-a", extracted_at=T1)
+
+    rows = build_silver_inventory(tmp_path)
+
+    # Same variation at two locations must remain two distinct snapshot rows.
+    assert len(rows) == 2
+    assert {r["location_id"] for r in rows} == {"loc-1", "loc-2"}
+
+
 def test_write_silver_parquet_round_trip(tmp_path):
     rows = [{"a": "x", "b": 1}, {"a": "y", "b": 2}]
     schema = [("a", "VARCHAR"), ("b", "BIGINT")]
@@ -237,9 +282,13 @@ def test_run_silver_transform_writes_all_tables(tmp_path):
     _write(bronze_root, "catalog", {"objects": []}, "run-a", T1)
     _write(bronze_root, "orders", {"orders": []}, "run-a", T1)
     _write(bronze_root, "payments", {"payments": []}, "run-a", T1)
+    _write(bronze_root, "inventory", {"counts": []}, "run-a", T1)
 
     counts = run_silver_transform(bronze_root, silver_root)
 
-    assert counts == {"locations": 1, "catalog_items": 0, "order_lines": 0, "payments": 0}
-    for name in ("locations", "catalog_items", "order_lines", "payments"):
+    assert counts == {
+        "locations": 1, "catalog_items": 0, "order_lines": 0,
+        "payments": 0, "inventory_snapshots": 0,
+    }
+    for name in ("locations", "catalog_items", "order_lines", "payments", "inventory_snapshots"):
         assert (silver_root / f"{name}.parquet").exists()

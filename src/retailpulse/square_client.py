@@ -168,3 +168,30 @@ class SquareClient:
             if not cursor:
                 break
             params["cursor"] = cursor
+
+    def iter_inventory_counts(
+        self,
+        location_ids: list[str],
+        catalog_object_ids: list[str] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """Current inventory counts. Read-only.
+
+        Uses the current endpoint (POST /v2/inventory/counts/batch-retrieve);
+        the older /v2/inventory/batch-retrieve-counts is deprecated. Filtering
+        to IN_STOCK keeps the snapshot to sellable on-hand quantities.
+        """
+        body: dict[str, Any] = {
+            "location_ids": location_ids,
+            "states": ["IN_STOCK"],
+            "limit": 1000,
+        }
+        if catalog_object_ids:
+            body["catalog_object_ids"] = catalog_object_ids
+
+        while True:
+            page = self._request("POST", "/v2/inventory/counts/batch-retrieve", json=body)
+            yield page
+            cursor = page.get("cursor")
+            if not cursor:
+                break
+            body["cursor"] = cursor

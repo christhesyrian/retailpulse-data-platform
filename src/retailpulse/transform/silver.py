@@ -49,6 +49,11 @@ PAYMENTS_SCHEMA = [
     ("source_type", "VARCHAR"), ("card_brand", "VARCHAR"), ("card_last_4", "VARCHAR"),
     ("processing_fee_cents", "BIGINT"), ("created_at", "VARCHAR"), ("updated_at", "VARCHAR"),
 ]
+INVENTORY_SCHEMA = [
+    ("catalog_object_id", "VARCHAR"), ("catalog_object_type", "VARCHAR"),
+    ("location_id", "VARCHAR"), ("state", "VARCHAR"),
+    ("quantity", "DOUBLE"), ("calculated_at", "VARCHAR"),
+]
 
 
 def _parse_ts(value: str) -> datetime:
@@ -245,6 +250,45 @@ def build_silver_payments(bronze_root: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def build_silver_inventory(bronze_root: Path) -> list[dict[str, Any]]:
+    """Latest inventory count per (variation, location, state).
+
+    Inventory counts have a composite natural key, so this dedupes on that
+    tuple (keeping the most recent `calculated_at`) rather than a single id.
+    """
+    latest: dict[tuple[str, str, str], tuple[datetime, dict[str, Any]]] = {}
+    for record, extracted_at in _iter_bronze_records(bronze_root, "inventory", "counts"):
+        object_id = record.get("catalog_object_id")
+        location_id = record.get("location_id")
+        state = record.get("state")
+        if object_id is None or location_id is None:
+            continue
+        key = (object_id, location_id, state or "")
+        freshness = _parse_ts(record.get("calculated_at") or extracted_at)
+        current = latest.get(key)
+        if current is None or freshness >= current[0]:
+            latest[key] = (freshness, record)
+
+    rows = []
+    for _freshness, record in latest.values():
+        try:
+            quantity = float(record.get("quantity", 0) or 0)
+        except (TypeError, ValueError):
+            quantity = 0.0
+        rows.append(
+            {
+                "catalog_object_id": record.get("catalog_object_id"),
+                "catalog_object_type": record.get("catalog_object_type"),
+                "location_id": record.get("location_id"),
+                "state": record.get("state"),
+                "quantity": quantity,
+                "calculated_at": record.get("calculated_at"),
+            }
+        )
+    rows.sort(key=lambda r: (r["catalog_object_id"] or "", r["location_id"] or ""))
+    return rows
+
+
 def write_silver_parquet(
     rows: list[dict[str, Any]], path: Path, schema: list[tuple[str, str]]
 ) -> Path:
@@ -277,6 +321,7 @@ def run_silver_transform(bronze_root: Path, silver_root: Path) -> dict[str, int]
         "catalog_items": (build_silver_catalog_items(bronze_root), CATALOG_ITEMS_SCHEMA),
         "order_lines": (build_silver_order_lines(bronze_root), ORDER_LINES_SCHEMA),
         "payments": (build_silver_payments(bronze_root), PAYMENTS_SCHEMA),
+        "inventory_snapshots": (build_silver_inventory(bronze_root), INVENTORY_SCHEMA),
     }
     counts: dict[str, int] = {}
     for name, (rows, schema) in tables.items():

@@ -187,6 +187,31 @@ def build_orders_and_payments(
     return orders, payments
 
 
+def build_inventory_counts(
+    variations: list[dict], now: datetime, rng: random.Random
+) -> list[dict]:
+    """One current IN_STOCK count per variation at the single location.
+
+    A few items are deliberately left low so inventory-position/reorder
+    KPIs have something to surface.
+    """
+    counts = []
+    for i, var in enumerate(variations):
+        # every 5th item is intentionally low stock
+        quantity = rng.randint(2, 8) if i % 5 == 0 else rng.randint(20, 120)
+        counts.append(
+            {
+                "catalog_object_id": var["var_id"],
+                "catalog_object_type": "ITEM_VARIATION",
+                "location_id": LOCATION_ID,
+                "state": "IN_STOCK",
+                "quantity": str(quantity),
+                "calculated_at": _iso(now),
+            }
+        )
+    return counts
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("output_dir", nargs="?", default="data/bronze")
@@ -209,6 +234,7 @@ def main() -> None:
     }
     catalog_payload, variations = build_catalog_payload()
     orders, payments = build_orders_and_payments(variations, args.days, rng)
+    inventory = build_inventory_counts(variations, now, rng)
 
     write_raw_page(root, "square", "locations", location_payload, page_number=1,
                    run_id="synthetic", environment="sandbox")
@@ -218,11 +244,13 @@ def main() -> None:
                    run_id="synthetic", environment="sandbox")
     write_raw_page(root, "square", "payments", {"payments": payments}, page_number=1,
                    run_id="synthetic", environment="sandbox")
+    write_raw_page(root, "square", "inventory", {"counts": inventory}, page_number=1,
+                   run_id="synthetic", environment="sandbox")
 
     print(
         f"Synthetic Bronze fixture written under {root}: "
-        f"1 location, {len(variations)} items, {len(orders)} orders, {len(payments)} payments "
-        f"across {args.days} days."
+        f"1 location, {len(variations)} items, {len(orders)} orders, {len(payments)} payments, "
+        f"{len(inventory)} inventory counts across {args.days} days."
     )
 
 

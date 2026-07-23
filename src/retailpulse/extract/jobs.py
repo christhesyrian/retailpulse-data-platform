@@ -71,3 +71,19 @@ def extract_catalog(client: SquareClient, raw_root: Path, run_id: str, environme
             environment=environment,
         )
     return pages
+
+
+def extract_inventory(
+    client: SquareClient,
+    raw_root: Path,
+    location_ids: list[str],
+    run_id: str,
+    environment: str,
+) -> int:
+    pages = 0
+    for pages, payload in enumerate(client.iter_inventory_counts(location_ids), start=1):
+        write_raw_page(
+            raw_root, "square", "inventory", payload, page_number=pages, run_id=run_id,
+            environment=environment,
+        )
+    return pages
