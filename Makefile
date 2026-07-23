@@ -1,7 +1,7 @@
 .PHONY: install check doctor extract-sandbox seed-sandbox silver dbt-build dbt-docs demo-data dashboard test lint security-check
 
 # Local, credential-free dbt env: DuckDB is a file on disk, not a server.
-DBT_ENV = RETAILPULSE_SILVER_DIR=$(CURDIR)/data/silver RETAILPULSE_WAREHOUSE_PATH=$(CURDIR)/data/gold/warehouse.duckdb
+DBT_ENV = RETAILPULSE_SILVER_DIR=$(CURDIR)/data/silver RETAILPULSE_INPUT_DIR=$(CURDIR)/data/input RETAILPULSE_WAREHOUSE_PATH=$(CURDIR)/data/gold/warehouse.duckdb
 
 install:
 	python3 -m venv .venv
@@ -31,9 +31,11 @@ dbt-docs:
 
 # One command to build the full demo warehouse from synthetic data (no Square,
 # no token needed — transform-silver is a purely local Bronze->Silver step).
+# Vendor costs are generated from the Silver catalog into data/input/ (git-ignored).
 demo-data:
 	. .venv/bin/activate && python3 scripts/generate_synthetic_bronze.py data/bronze
 	. .venv/bin/activate && RAW_DATA_DIR=data/bronze retailpulse transform-silver
+	. .venv/bin/activate && python3 scripts/generate_synthetic_vendor_costs.py
 	$(MAKE) dbt-build
 
 dashboard:

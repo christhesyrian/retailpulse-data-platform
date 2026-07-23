@@ -43,12 +43,16 @@ jobs:
         env:
           RAW_DATA_DIR: data/bronze
 
+      - name: Generate synthetic vendor costs (no real cost data)
+        run: python3 scripts/generate_synthetic_vendor_costs.py
+
       - name: Run dbt build against synthetic data
         run: |
           mkdir -p data/gold
           dbt build --project-dir dbt --profiles-dir dbt
         env:
           RETAILPULSE_SILVER_DIR: ${{ github.workspace }}/data/silver
+          RETAILPULSE_INPUT_DIR: ${{ github.workspace }}/data/input
           RETAILPULSE_WAREHOUSE_PATH: ${{ github.workspace }}/data/gold/warehouse.duckdb
 
       - name: Smoke-test dashboard KPI queries
@@ -56,11 +60,11 @@ jobs:
         env:
           RETAILPULSE_WAREHOUSE_PATH: ${{ github.workspace }}/data/gold/warehouse.duckdb
 
-      - name: Verify no raw Bronze/Silver/Gold data is tracked
+      - name: Verify no raw data (Bronze/Silver/Gold/input) is tracked
         run: |
-          if git ls-files | grep -qE '^data/(bronze|silver|gold)/'; then
-            echo "Raw data files are tracked in Git. Failing build."
-            git ls-files | grep -E '^data/(bronze|silver|gold)/'
+          if git ls-files | grep -qE '^data/(bronze|silver|gold|input)/'; then
+            echo "Raw/business data files are tracked in Git. Failing build."
+            git ls-files | grep -E '^data/(bronze|silver|gold|input)/'
             exit 1
           fi
           echo "No raw data directories are tracked."

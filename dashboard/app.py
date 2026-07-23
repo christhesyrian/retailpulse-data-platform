@@ -73,6 +73,22 @@ def main() -> None:
     row2[2].metric("Processing Fees", dollars(summary["processing_fee_cents"]))
     row2[3].metric("Total Collected", dollars(summary["collected_cents"]))
 
+    # --- Margin tiles (M5: vendor costs unlock true profit) -----------------
+    gross_profit = summary["gross_profit_cents"]
+    margin_pct = summary["gross_margin_pct"]
+    coverage = summary["cost_coverage_pct"]
+    if gross_profit is not None:
+        row3 = st.columns(4)
+        row3[0].metric("COGS", dollars(summary["cogs_cents"]))
+        row3[1].metric("Gross Profit", dollars(gross_profit))
+        row3[2].metric("Gross Margin", f"{margin_pct:.1f}%" if margin_pct is not None else "—")
+        row3[3].metric(
+            "Cost Coverage",
+            f"{coverage:.0f}%" if coverage is not None else "—",
+            help="Share of net sales for which a vendor cost is on file. "
+            "Margin is computed only over these lines.",
+        )
+
     # --- Reconciliation status ---------------------------------------------
     recon = query(
         "select reconciliation_status, count(*) as n "
@@ -185,10 +201,86 @@ def main() -> None:
             }
         )
         st.dataframe(pay_display, hide_index=True, use_container_width=True)
-        st.caption(
-            "Net sales exclude tax and are never labeled profit — profit requires vendor "
-            "cost data (a later milestone)."
+
+    st.divider()
+
+    # --- Gross margin (M5) --------------------------------------------------
+    st.subheader("Gross profit & margin by category")
+    st.caption(
+        "Gross profit = net sales − cost of goods sold, using operator-maintained vendor "
+        "costs. Only lines with a known cost are included; this is true profit, not revenue."
+    )
+    margin = query(
+        "select category_name, net_sales_cents, gross_profit_cents, gross_margin_pct, "
+        "line_cost_coverage_pct from main_marts.kpi_margin_by_category "
+        "order by gross_profit_cents desc"
+    )
+    if margin.empty or margin["gross_profit_cents"].isna().all():
+        st.info(
+            "No vendor costs on file yet. Generate them with "
+            "`python3 scripts/generate_synthetic_vendor_costs.py` (or add your own "
+            "`data/input/vendor_costs.csv`) and rebuild."
         )
+    else:
+        mleft, mright = st.columns([3, 2])
+        with mleft:
+            margin["Gross profit ($)"] = margin["gross_profit_cents"] / 100
+            margin_chart = (
+                alt.Chart(margin)
+                .mark_bar()
+                .encode(
+                    x=alt.X("Gross profit ($):Q", title="Gross profit ($)"),
+                    y=alt.Y("category_name:N", sort="-x", title=None),
+                    tooltip=["category_name:N", "Gross profit ($):Q", "gross_margin_pct:Q"],
+                )
+                .properties(height=260)
+            )
+            st.altair_chart(margin_chart, use_container_width=True)
+        with mright:
+            margin_display = pd.DataFrame(
+                {
+                    "Category": margin["category_name"],
+                    "Net sales": (margin["net_sales_cents"] / 100).map(lambda v: f"${v:,.0f}"),
+                    "Gross profit": (margin["gross_profit_cents"] / 100).map(lambda v: f"${v:,.0f}"),
+                    "Margin": margin["gross_margin_pct"].map(
+                        lambda v: f"{v:.1f}%" if pd.notna(v) else "—"
+                    ),
+                }
+            )
+            st.dataframe(margin_display, hide_index=True, use_container_width=True)
+
+    st.divider()
+
+    # --- Inventory position (M5) -------------------------------------------
+    st.subheader("Inventory position & reorder signal")
+    st.caption(
+        "Days of inventory = on-hand ÷ average daily units sold (trailing 30 days). "
+        "Reorder heuristic is a fixed threshold, not a demand forecast (that's a later milestone)."
+    )
+    inv = query(
+        "select item_name, category_name, quantity_on_hand, units_sold_30d, "
+        "days_of_inventory, stock_status from main_marts.kpi_inventory_position "
+        "order by days_of_inventory nulls last"
+    )
+    if inv.empty:
+        st.info("No inventory snapshots found. Run an extraction (or the synthetic generator) first.")
+    else:
+        reorder_count = int((inv["stock_status"] == "reorder_soon").sum())
+        if reorder_count:
+            st.warning(f"⚠️ {reorder_count} item(s) flagged **reorder_soon** (under ~7 days of stock).")
+        inv_display = pd.DataFrame(
+            {
+                "Item": inv["item_name"],
+                "Category": inv["category_name"],
+                "On hand": inv["quantity_on_hand"].map(lambda v: f"{v:,.0f}"),
+                "Sold (30d)": inv["units_sold_30d"].map(lambda v: f"{v:,.0f}"),
+                "Days of inventory": inv["days_of_inventory"].map(
+                    lambda v: f"{v:.1f}" if pd.notna(v) else "—"
+                ),
+                "Status": inv["stock_status"],
+            }
+        )
+        st.dataframe(inv_display, hide_index=True, use_container_width=True)
 
 
 if __name__ == "__main__":

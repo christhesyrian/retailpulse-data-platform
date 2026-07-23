@@ -14,6 +14,7 @@ logs/
 data/bronze/
 data/silver/
 data/gold/
+data/input/
 secrets/
 *.pem
 *.key

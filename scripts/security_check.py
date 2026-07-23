@@ -14,7 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-IGNORED_PATH_CHECKS = [".env", "data/bronze", "data/silver", "data/gold"]
+IGNORED_PATH_CHECKS = [".env", "data/bronze", "data/silver", "data/gold", "data/input"]
 
 # Patterns that always indicate a real secret, never a documentation example.
 SECRET_PATTERNS = [

@@ -29,6 +29,8 @@ EXPECTED = [
     ("main_marts.kpi_sales_by_hour", True),
     ("main_marts.kpi_payment_methods", True),
     ("main_marts.rpt_order_payment_reconciliation", False),
+    ("main_marts.kpi_margin_by_category", False),
+    ("main_marts.kpi_inventory_position", False),
 ]
 
 
