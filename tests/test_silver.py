@@ -1,5 +1,6 @@
-import csv
 from datetime import datetime, timezone
+
+import duckdb
 
 from retailpulse.storage import write_raw_page
 from retailpulse.transform.silver import (
@@ -8,7 +9,7 @@ from retailpulse.transform.silver import (
     build_silver_payments,
     build_silver_locations,
     run_silver_transform,
-    write_silver_csv,
+    write_silver_parquet,
 )
 
 
@@ -202,14 +203,27 @@ def test_payments_minimize_card_pii(tmp_path):
     assert not any("secret" in str(v) for v in row.values())
 
 
-def test_write_silver_csv_round_trip(tmp_path):
-    rows = [{"a": "1", "b": "2"}, {"a": "3", "b": "4"}]
-    path = write_silver_csv(rows, tmp_path / "out.csv", fieldnames=["a", "b"])
+def test_write_silver_parquet_round_trip(tmp_path):
+    rows = [{"a": "x", "b": 1}, {"a": "y", "b": 2}]
+    schema = [("a", "VARCHAR"), ("b", "BIGINT")]
+    path = write_silver_parquet(rows, tmp_path / "out.parquet", schema)
 
-    with path.open(newline="", encoding="utf-8") as f:
-        reader = list(csv.DictReader(f))
+    con = duckdb.connect(":memory:")
+    result = con.execute(f"SELECT a, b FROM read_parquet('{path.as_posix()}') ORDER BY a").fetchall()
+    con.close()
 
-    assert reader == rows
+    assert result == [("x", 1), ("y", 2)]
+
+
+def test_write_silver_parquet_empty_rows_still_creates_typed_file(tmp_path):
+    schema = [("a", "VARCHAR"), ("b", "BIGINT")]
+    path = write_silver_parquet([], tmp_path / "out.parquet", schema)
+
+    con = duckdb.connect(":memory:")
+    result = con.execute(f"SELECT * FROM read_parquet('{path.as_posix()}')").fetchall()
+    con.close()
+
+    assert result == []
 
 
 def test_run_silver_transform_writes_all_tables(tmp_path):
@@ -225,4 +239,4 @@ def test_run_silver_transform_writes_all_tables(tmp_path):
 
     assert counts == {"locations": 1, "catalog_items": 0, "order_lines": 0, "payments": 0}
     for name in ("locations", "catalog_items", "order_lines", "payments"):
-        assert (silver_root / f"{name}.csv").exists()
+        assert (silver_root / f"{name}.parquet").exists()

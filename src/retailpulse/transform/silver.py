@@ -1,43 +1,53 @@
 """Bronze -> Silver normalization.
 
 Reads immutable Bronze JSON, which accumulates one snapshot per
-extraction run, and produces deduplicated, flattened Silver tables.
-Unlike Bronze, Silver output is derived and safely rebuilt from Bronze
-on every run — it is not itself immutable.
+extraction run, and produces deduplicated, flattened Silver tables as
+Parquet files under data/silver/ — the local "lake" that dbt-duckdb
+reads directly (see dbt/models/staging). Unlike Bronze, Silver output
+is derived and safely rebuilt from Bronze on every run; it is not
+itself immutable.
 
-Money stays in integer cents. Timestamps stay as the UTC strings Square
-returns. Payment card details are minimized to brand + last 4 digits;
-fingerprint and BIN are dropped since Silver is the layer future
-dashboards and exports read from.
+Money stays in integer cents; timestamps stay as the UTC strings
+Square returns (Gold models cast them). Payment card details are
+minimized to brand + last 4 digits — fingerprint and BIN are dropped
+here rather than carried into Silver/Gold.
 """
 
 from __future__ import annotations
 
-import csv
 import json
 from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-LOCATIONS_FIELDS = [
-    "location_id", "name", "status", "timezone", "currency", "country",
-    "business_name", "merchant_id", "created_at",
+import duckdb
+
+# (column name, DuckDB type) — explicit typing for the Parquet schema.
+LOCATIONS_SCHEMA = [
+    ("location_id", "VARCHAR"), ("name", "VARCHAR"), ("status", "VARCHAR"),
+    ("timezone", "VARCHAR"), ("currency", "VARCHAR"), ("country", "VARCHAR"),
+    ("business_name", "VARCHAR"), ("merchant_id", "VARCHAR"), ("created_at", "VARCHAR"),
 ]
-CATALOG_ITEMS_FIELDS = [
-    "variation_id", "item_id", "item_name", "variation_name", "category_id",
-    "category_name", "price_cents", "currency", "sku", "is_deleted", "updated_at",
+CATALOG_ITEMS_SCHEMA = [
+    ("variation_id", "VARCHAR"), ("item_id", "VARCHAR"), ("item_name", "VARCHAR"),
+    ("variation_name", "VARCHAR"), ("category_id", "VARCHAR"), ("category_name", "VARCHAR"),
+    ("price_cents", "BIGINT"), ("currency", "VARCHAR"), ("sku", "VARCHAR"),
+    ("is_deleted", "BOOLEAN"), ("updated_at", "VARCHAR"),
 ]
-ORDER_LINES_FIELDS = [
-    "order_id", "line_item_uid", "location_id", "catalog_object_id", "item_name",
-    "variation_name", "quantity", "gross_sales_cents", "discount_cents", "tax_cents",
-    "net_sales_cents", "currency", "order_state", "order_created_at",
-    "order_updated_at", "closed_at",
+ORDER_LINES_SCHEMA = [
+    ("order_id", "VARCHAR"), ("line_item_uid", "VARCHAR"), ("location_id", "VARCHAR"),
+    ("catalog_object_id", "VARCHAR"), ("item_name", "VARCHAR"), ("variation_name", "VARCHAR"),
+    ("quantity", "VARCHAR"), ("gross_sales_cents", "BIGINT"), ("discount_cents", "BIGINT"),
+    ("tax_cents", "BIGINT"), ("net_sales_cents", "BIGINT"), ("currency", "VARCHAR"),
+    ("order_state", "VARCHAR"), ("order_created_at", "VARCHAR"),
+    ("order_updated_at", "VARCHAR"), ("closed_at", "VARCHAR"),
 ]
-PAYMENTS_FIELDS = [
-    "payment_id", "order_id", "location_id", "amount_cents", "currency", "status",
-    "source_type", "card_brand", "card_last_4", "processing_fee_cents",
-    "created_at", "updated_at",
+PAYMENTS_SCHEMA = [
+    ("payment_id", "VARCHAR"), ("order_id", "VARCHAR"), ("location_id", "VARCHAR"),
+    ("amount_cents", "BIGINT"), ("currency", "VARCHAR"), ("status", "VARCHAR"),
+    ("source_type", "VARCHAR"), ("card_brand", "VARCHAR"), ("card_last_4", "VARCHAR"),
+    ("processing_fee_cents", "BIGINT"), ("created_at", "VARCHAR"), ("updated_at", "VARCHAR"),
 ]
 
 
@@ -228,25 +238,41 @@ def build_silver_payments(bronze_root: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def write_silver_csv(rows: list[dict[str, Any]], path: Path, fieldnames: list[str]) -> Path:
+def write_silver_parquet(
+    rows: list[dict[str, Any]], path: Path, schema: list[tuple[str, str]]
+) -> Path:
+    """Write typed rows to a Parquet file via an in-memory DuckDB table.
+
+    DuckDB has native Parquet support, so this needs no separate Arrow/
+    pandas dependency — the same `duckdb` package used as the dbt target
+    writes the lake files dbt reads.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    column_names = [name for name, _ in schema]
+    con = duckdb.connect(":memory:")
+    try:
+        col_defs = ", ".join(f'"{name}" {dtype}' for name, dtype in schema)
+        con.execute(f"CREATE TABLE silver ({col_defs})")
+        if rows:
+            placeholders = ", ".join(["?"] * len(schema))
+            values = [tuple(row.get(name) for name in column_names) for row in rows]
+            con.executemany(f"INSERT INTO silver VALUES ({placeholders})", values)
+        con.execute(f"COPY silver TO '{path.as_posix()}' (FORMAT PARQUET)")
+    finally:
+        con.close()
     return path
 
 
 def run_silver_transform(bronze_root: Path, silver_root: Path) -> dict[str, int]:
     """Rebuild every Silver table from Bronze and return row counts per table."""
-    tables: dict[str, tuple[list[dict[str, Any]], list[str]]] = {
-        "locations": (build_silver_locations(bronze_root), LOCATIONS_FIELDS),
-        "catalog_items": (build_silver_catalog_items(bronze_root), CATALOG_ITEMS_FIELDS),
-        "order_lines": (build_silver_order_lines(bronze_root), ORDER_LINES_FIELDS),
-        "payments": (build_silver_payments(bronze_root), PAYMENTS_FIELDS),
+    tables: dict[str, tuple[list[dict[str, Any]], list[tuple[str, str]]]] = {
+        "locations": (build_silver_locations(bronze_root), LOCATIONS_SCHEMA),
+        "catalog_items": (build_silver_catalog_items(bronze_root), CATALOG_ITEMS_SCHEMA),
+        "order_lines": (build_silver_order_lines(bronze_root), ORDER_LINES_SCHEMA),
+        "payments": (build_silver_payments(bronze_root), PAYMENTS_SCHEMA),
     }
     counts: dict[str, int] = {}
-    for name, (rows, fields) in tables.items():
-        write_silver_csv(rows, silver_root / f"{name}.csv", fields)
+    for name, (rows, schema) in tables.items():
+        write_silver_parquet(rows, silver_root / f"{name}.parquet", schema)
         counts[name] = len(rows)
     return counts
