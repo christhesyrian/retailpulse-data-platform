@@ -17,3 +17,9 @@ data/gold/
 secrets/
 *.pem
 *.key
+dbt/target/
+dbt/logs/
+dbt/dbt_packages/
+dbt/.user.yml
+*.duckdb
+*.duckdb.wal
