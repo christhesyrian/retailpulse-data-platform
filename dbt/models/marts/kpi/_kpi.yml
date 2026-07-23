@@ -1,0 +1,69 @@
+version: 2
+
+models:
+  - name: kpi_daily_sales
+    description: One row per calendar day (including zero-sales days) with daily sales KPIs.
+    columns:
+      - name: sale_date
+        data_tests:
+          - not_null
+          - unique
+      - name: net_sales_cents
+        data_tests:
+          - not_null
+
+  - name: kpi_sales_by_category
+    description: Net sales and unit volume by product category, with share of total.
+    columns:
+      - name: category_name
+        data_tests:
+          - not_null
+          - unique
+
+  - name: kpi_sales_by_weekday
+    description: Sales aggregated by ISO day of week (1=Monday..7=Sunday).
+    columns:
+      - name: day_of_week
+        data_tests:
+          - not_null
+          - unique
+          - accepted_values:
+              arguments:
+                values: [1, 2, 3, 4, 5, 6, 7]
+
+  - name: kpi_sales_by_hour
+    description: Sales aggregated by hour of day (0..23).
+    columns:
+      - name: hour_of_day
+        data_tests:
+          - not_null
+          - unique
+
+  - name: kpi_payment_methods
+    description: Amount collected and processing fees by tender type.
+    columns:
+      - name: source_type
+        data_tests:
+          - not_null
+          - unique
+
+  - name: kpi_summary
+    description: Single-row headline KPIs for the dashboard.
+    columns:
+      - name: orders
+        data_tests:
+          - not_null
+
+  - name: rpt_order_payment_reconciliation
+    description: Per-order reconciliation of recorded order totals vs. payments collected.
+    columns:
+      - name: square_order_id
+        data_tests:
+          - not_null
+          - unique
+      - name: reconciliation_status
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['matched', 'mismatch', 'order_without_payment', 'payment_without_order']
