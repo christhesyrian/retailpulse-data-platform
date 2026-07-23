@@ -39,8 +39,8 @@ jobs:
 
       - name: Run Silver transform on synthetic data
         run: retailpulse transform-silver
+        # No Square token needed — transform-silver is a purely local step.
         env:
-          SQUARE_ACCESS_TOKEN: ci-fake-token-not-real
           RAW_DATA_DIR: data/bronze
 
       - name: Run dbt build against synthetic data
@@ -49,6 +49,11 @@ jobs:
           dbt build --project-dir dbt --profiles-dir dbt
         env:
           RETAILPULSE_SILVER_DIR: ${{ github.workspace }}/data/silver
+          RETAILPULSE_WAREHOUSE_PATH: ${{ github.workspace }}/data/gold/warehouse.duckdb
+
+      - name: Smoke-test dashboard KPI queries
+        run: python3 scripts/smoke_dashboard_queries.py
+        env:
           RETAILPULSE_WAREHOUSE_PATH: ${{ github.workspace }}/data/gold/warehouse.duckdb
 
       - name: Verify no raw Bronze/Silver/Gold data is tracked
