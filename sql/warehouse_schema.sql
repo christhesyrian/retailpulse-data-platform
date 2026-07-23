@@ -57,3 +57,44 @@ create table if not exists fact_payment (
     processing_fee_cents bigint,
     currency text
 );
+
+-- M5: inventory + vendor costs (implemented in dbt/models/marts/).
+
+create table if not exists dim_vendor (
+    vendor_key bigint generated always as identity primary key,
+    vendor_name text unique not null,
+    variation_count bigint
+);
+
+create table if not exists fact_inventory_snapshot (
+    inventory_snapshot_key bigint generated always as identity primary key,
+    square_catalog_object_id text not null,
+    item_key bigint references dim_item(item_key),
+    location_key bigint references dim_location(location_key),
+    square_location_id text,
+    state text,
+    quantity_on_hand numeric(18, 4),
+    calculated_at timestamp
+);
+
+-- Vendor/acquisition costs come from an operator-maintained input
+-- (data/input/vendor_costs.csv), NOT from Square. fact_order_line_margin
+-- joins them to fact_order_line to compute COGS and gross profit:
+--   gross_profit_cents = net_sales_cents - (unit_cost_cents * quantity)
+-- Lines with no cost on file have NULL cogs/gross_profit (has_cost = false).
+create table if not exists fact_order_line_margin (
+    order_line_key bigint primary key references fact_order_line(order_line_key),
+    square_order_id text,
+    square_line_item_uid text,
+    item_key bigint references dim_item(item_key),
+    vendor_key bigint references dim_vendor(vendor_key),
+    category_name text,
+    vendor_name text,
+    quantity numeric(18, 4),
+    net_sales_cents bigint,
+    unit_cost_cents bigint,
+    cogs_cents bigint,
+    gross_profit_cents bigint,
+    gross_margin_pct numeric(8, 2),
+    has_cost boolean
+);

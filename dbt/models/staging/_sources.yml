@@ -19,3 +19,18 @@ sources:
         description: One row per order line item, flattened from Square's nested orders.
       - name: payments
         description: One row per payment, with card details minimized to brand + last 4.
+      - name: inventory_snapshots
+        description: Latest IN_STOCK count per item variation and location.
+
+  - name: reference
+    description: >
+      Operator-maintained reference data that does NOT come from Square.
+      vendor_costs is a git-ignored CSV under data/input/ (real acquisition
+      costs are business data and must never be committed); dbt-duckdb reads
+      it directly via read_csv. Generate/refresh it with
+      scripts/generate_synthetic_vendor_costs.py.
+    meta:
+      external_location: "read_csv('{{ env_var('RETAILPULSE_INPUT_DIR', 'data/input') }}/{name}.csv', header=true, auto_detect=true)"
+    tables:
+      - name: vendor_costs
+        description: One row per item variation — vendor and unit acquisition cost in cents.

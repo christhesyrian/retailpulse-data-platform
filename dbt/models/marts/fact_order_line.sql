@@ -14,6 +14,7 @@ select
     row_number() over (order by order_lines.order_id, order_lines.line_item_uid) as order_line_key,
     order_lines.order_id as square_order_id,
     order_lines.line_item_uid as square_line_item_uid,
+    order_lines.catalog_object_id,
     locations.location_key,
     items.item_key,
     order_lines.closed_at,

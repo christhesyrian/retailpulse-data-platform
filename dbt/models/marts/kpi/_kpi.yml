@@ -67,3 +67,33 @@ models:
           - accepted_values:
               arguments:
                 values: ['matched', 'mismatch', 'order_without_payment', 'payment_without_order']
+
+  - name: kpi_margin_by_category
+    description: Gross profit and margin by category (costed lines only).
+    columns:
+      - name: category_name
+        data_tests:
+          - not_null
+          - unique
+
+  - name: kpi_margin_by_vendor
+    description: Gross profit and margin by vendor (costed lines only).
+    columns:
+      - name: vendor_name
+        data_tests:
+          - not_null
+          - unique
+
+  - name: kpi_inventory_position
+    description: Current stock position per item with days-of-inventory and reorder signal.
+    columns:
+      - name: square_catalog_object_id
+        data_tests:
+          - not_null
+          - unique
+      - name: stock_status
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['no_recent_sales', 'reorder_soon', 'watch', 'ok']

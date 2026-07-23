@@ -61,3 +61,47 @@ models:
               arguments:
                 to: ref('dim_location')
                 field: location_key
+
+  - name: dim_vendor
+    description: One row per vendor named in the operator-maintained cost file.
+    columns:
+      - name: vendor_key
+        data_tests:
+          - not_null
+          - unique
+      - name: vendor_name
+        data_tests:
+          - not_null
+          - unique
+
+  - name: fact_inventory_snapshot
+    description: One row per item variation, location, and snapshot time.
+    columns:
+      - name: inventory_snapshot_key
+        data_tests:
+          - not_null
+          - unique
+      - name: quantity_on_hand
+        data_tests:
+          - not_null
+      - name: item_key
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_item')
+                field: item_key
+
+  - name: fact_order_line_margin
+    description: Order lines enriched with vendor cost, COGS, and gross profit/margin.
+    columns:
+      - name: order_line_key
+        data_tests:
+          - not_null
+          - unique
+          - relationships:
+              arguments:
+                to: ref('fact_order_line')
+                field: order_line_key
+      - name: has_cost
+        data_tests:
+          - not_null
