@@ -4,8 +4,12 @@ on:
   push:
   pull_request:
 
-# This workflow never touches Square: no SQUARE_ACCESS_TOKEN secret is
-# configured, no extraction command runs, and no raw data is uploaded.
+# This workflow never touches Square: no real SQUARE_ACCESS_TOKEN secret
+# is configured, no extraction command runs against Square, and no raw
+# data is uploaded. The Silver/dbt steps below run against a small
+# synthetic fixture (scripts/generate_synthetic_bronze.py) so the whole
+# pipeline — Bronze -> Silver -> dbt Gold models and tests — is verified
+# on every push without any credentials or real business data.
 jobs:
   quality:
     runs-on: ubuntu-latest
@@ -29,6 +33,23 @@ jobs:
 
       - name: Run credential-free security check
         run: python3 scripts/security_check.py
+
+      - name: Generate synthetic Bronze fixture (no Square credentials)
+        run: python3 scripts/generate_synthetic_bronze.py data/bronze
+
+      - name: Run Silver transform on synthetic data
+        run: retailpulse transform-silver
+        env:
+          SQUARE_ACCESS_TOKEN: ci-fake-token-not-real
+          RAW_DATA_DIR: data/bronze
+
+      - name: Run dbt build against synthetic data
+        run: |
+          mkdir -p data/gold
+          dbt build --project-dir dbt --profiles-dir dbt
+        env:
+          RETAILPULSE_SILVER_DIR: ${{ github.workspace }}/data/silver
+          RETAILPULSE_WAREHOUSE_PATH: ${{ github.workspace }}/data/gold/warehouse.duckdb
 
       - name: Verify no raw Bronze/Silver/Gold data is tracked
         run: |
