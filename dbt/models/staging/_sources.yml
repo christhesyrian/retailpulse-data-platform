@@ -1,0 +1,21 @@
+version: 2
+
+sources:
+  - name: silver
+    description: >
+      RetailPulse Silver layer — deduplicated, flattened Parquet files
+      written by src/retailpulse/transform/silver.py. dbt-duckdb reads
+      these directly off disk (the local "lake") via read_parquet();
+      nothing is copied into the warehouse database until a staging
+      model materializes it.
+    meta:
+      external_location: "{{ env_var('RETAILPULSE_SILVER_DIR') }}/{name}.parquet"
+    tables:
+      - name: locations
+        description: One row per Square location.
+      - name: catalog_items
+        description: One row per catalog item variation, joined against its item and category.
+      - name: order_lines
+        description: One row per order line item, flattened from Square's nested orders.
+      - name: payments
+        description: One row per payment, with card details minimized to brand + last 4.

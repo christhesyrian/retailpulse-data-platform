@@ -1,0 +1,36 @@
+version: 2
+
+models:
+  - name: stg_locations
+    description: Locations with timestamps cast to real TIMESTAMP.
+    columns:
+      - name: location_id
+        data_tests:
+          - not_null
+          - unique
+
+  - name: stg_catalog_items
+    description: Catalog item variations with typed price/flag columns.
+    columns:
+      - name: variation_id
+        data_tests:
+          - not_null
+          - unique
+
+  - name: stg_order_lines
+    description: Order line items with quantity/timestamps cast to real types.
+    columns:
+      - name: order_id
+        data_tests:
+          - not_null
+      - name: line_item_uid
+        data_tests:
+          - not_null
+
+  - name: stg_payments
+    description: Payments with timestamps cast to real TIMESTAMP.
+    columns:
+      - name: payment_id
+        data_tests:
+          - not_null
+          - unique

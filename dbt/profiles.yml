@@ -1,0 +1,11 @@
+# Local, credential-free dbt profile. DuckDB is an embedded database file
+# on disk -- no server, no account, nothing to leak. Paths come from env
+# vars set by the Makefile so this file has no machine-specific absolute
+# paths in it.
+retailpulse:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('RETAILPULSE_WAREHOUSE_PATH') }}"
+      threads: 4

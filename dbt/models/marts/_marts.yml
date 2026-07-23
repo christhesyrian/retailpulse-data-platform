@@ -1,0 +1,63 @@
+version: 2
+
+models:
+  - name: dim_location
+    description: One row per Square location. SCD2 columns are placeholders — see model comment.
+    columns:
+      - name: location_key
+        data_tests:
+          - not_null
+          - unique
+      - name: square_location_id
+        data_tests:
+          - not_null
+          - unique
+
+  - name: dim_item
+    description: One row per catalog item variation, joined against its item and category.
+    columns:
+      - name: item_key
+        data_tests:
+          - not_null
+          - unique
+      - name: square_catalog_object_id
+        data_tests:
+          - not_null
+          - unique
+
+  - name: fact_order_line
+    description: One row per order line item.
+    columns:
+      - name: order_line_key
+        data_tests:
+          - not_null
+          - unique
+      - name: square_order_id
+        data_tests:
+          - not_null
+      - name: location_key
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_location')
+                field: location_key
+      - name: item_key
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_item')
+                field: item_key
+
+  - name: fact_payment
+    description: One row per payment.
+    columns:
+      - name: square_payment_id
+        data_tests:
+          - not_null
+          - unique
+      - name: location_key
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_location')
+                field: location_key
