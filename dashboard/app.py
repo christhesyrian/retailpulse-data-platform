@@ -83,18 +83,20 @@ def main() -> None:
     row2[2].metric("Processing Fees", dollars(summary["processing_fee_cents"]))
     row2[3].metric("Total Collected", dollars(summary["collected_cents"]))
 
-    # --- Margin tiles (M5: vendor costs unlock true profit) -----------------
+    # --- Margin tiles (only when vendor costs are on file) ------------------
+    # DB nulls arrive as pandas NaN (a float), so `is not None` isn't enough —
+    # use pd.notna so a store with no costs simply doesn't see these tiles.
     gross_profit = summary["gross_profit_cents"]
     margin_pct = summary["gross_margin_pct"]
     coverage = summary["cost_coverage_pct"]
-    if gross_profit is not None:
+    if pd.notna(gross_profit):
         row3 = st.columns(4)
         row3[0].metric("COGS", dollars(summary["cogs_cents"]))
         row3[1].metric("Gross Profit", dollars(gross_profit))
-        row3[2].metric("Gross Margin", f"{margin_pct:.1f}%" if margin_pct is not None else "—")
+        row3[2].metric("Gross Margin", f"{margin_pct:.1f}%" if pd.notna(margin_pct) else "—")
         row3[3].metric(
             "Cost Coverage",
-            f"{coverage:.0f}%" if coverage is not None else "—",
+            f"{coverage:.0f}%" if pd.notna(coverage) else "—",
             help="Share of net sales for which a vendor cost is on file. "
             "Margin is computed only over these lines.",
         )
