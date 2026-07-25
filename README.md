@@ -31,9 +31,8 @@ flowchart LR
     B --> C[Bronze Raw JSON]
     C --> D[Silver Parquet lake]
     D --> E[Gold facts & dimensions]
-    E --> K[KPI + margin + inventory models]
+    E --> K[KPI, item sales & forecast]
     K --> F[Streamlit dashboard]
-    K -.-> G[Forecasting - future]
 ```
 
 | Layer | Status | Description |
@@ -47,13 +46,20 @@ flowchart LR
 | Dashboard | Implemented | Streamlit app reading the tested KPI models |
 | Forecasting | **Not implemented** — future work | Demand forecasting, reorder recommendations |
 
-## Current milestone: M5 — inventory snapshots and vendor costs (gross margin)
+## Current focus: item-level sales analytics and forecasting
 
-M1–M4 are complete. M5 adds the two things needed to move from *revenue* to *profit* analysis:
+The heart of the platform: what each item sells, over time, and what it will sell next.
 
-- **Inventory snapshots**: read-only extraction of Square inventory counts (`POST /v2/inventory/counts/batch-retrieve`) → `fact_inventory_snapshot`, plus a `kpi_inventory_position` model with days-of-inventory and a reorder signal.
-- **Vendor costs → gross margin**: vendor/acquisition costs are an operator-maintained input (a Git-ignored `data/input/vendor_costs.csv` — real cost data is never committed). `fact_order_line_margin` joins them to order lines to compute **COGS and gross profit** (`gross_profit = net_sales − COGS`), with `kpi_margin_by_category` / `kpi_margin_by_vendor`. Margin is only computed where a cost is on file (`has_cost`), and coverage is reported — profit is never fabricated from missing costs.
-- **Production safeguard**: contacting production now requires an explicit `RETAILPULSE_ALLOW_PRODUCTION=1` opt-in per command, so a real store can't be hit by accident. See [`docs/production-switch.md`](docs/production-switch.md) for the read-only production-validation guide.
+- **Item sales** (`kpi_item_sales`, `kpi_item_weekly_sales`): per-item units sold this week / last week / this month, a 4-week average, week-over-week trend, and a full weekly history — built straight from order line items, so it works against any Square store with **no setup on the merchant's side**.
+- **Forecasting** (`kpi_item_forecast`): projected units per item for the next 4 weeks, from a simple, explainable linear trend over recent weeks (falls back to a running average with little history). Honest estimates — calendar seasonality is a planned enhancement, not yet modeled.
+
+### Optional: inventory and vendor costs (only active when you have that data)
+
+M5 added inventory and gross-margin analysis, but both are **optional** and only light up when their source data exists — the pipeline never breaks without them:
+
+- **Inventory** (`fact_inventory_snapshot`, `kpi_inventory_position`): read-only Square inventory counts → days-of-inventory + reorder signal. Empty (and hidden in the dashboard) if your store doesn't track stock.
+- **Vendor costs → gross margin** (`fact_order_line_margin`, `kpi_margin_by_*`): if you maintain a Git-ignored `data/input/vendor_costs.csv`, the pipeline computes **COGS and gross profit** (`gross_profit = net_sales − COGS`). Margin is only computed where a cost is on file, and coverage is reported — profit is never fabricated from missing costs. No costs file → margin simply shows no coverage.
+- **Production safeguard**: contacting production requires an explicit `RETAILPULSE_ALLOW_PRODUCTION=1` opt-in per command, so a real store can't be hit by accident. See [`docs/production-switch.md`](docs/production-switch.md) for the read-only production-validation guide.
 
 ### Earlier milestone — M4: KPI models, reconciliation, and dashboard
 
@@ -139,9 +145,11 @@ Edit `unit_cost_cents` / `vendor_name` with your real figures, then `make dbt-bu
 - [x] Immutable, partitioned Bronze JSON storage with `run_id` + `environment` metadata
 - [x] Read-only extraction of locations, catalog, orders, payments, and inventory counts
 - [x] Silver normalization written as Parquet (dedup, catalog join, line-item flattening, card-detail minimization, inventory snapshots)
-- [x] dbt-duckdb Gold layer: dimensions, facts, KPI + reconciliation + gross-margin + inventory-position models, all with schema tests
-- [x] Gross profit / margin from operator-maintained vendor costs (COGS, `gross_profit = net_sales − COGS`, coverage reported)
-- [x] Streamlit dashboard (sales, margin, inventory) sourced entirely from the tested KPI models
+- [x] dbt-duckdb Gold layer: dimensions, facts, and tested KPI models (sales, reconciliation, per-item sales, forecast, and optional margin/inventory)
+- [x] **Per-item sales analytics** (`kpi_item_sales`, `kpi_item_weekly_sales`) — units this/last week and month, 4-week average, WoW trend, weekly history
+- [x] **Sales forecasting** (`kpi_item_forecast`) — projected units per item for the next 4 weeks (linear trend, honest fallback)
+- [x] Optional gross margin (from operator-maintained vendor costs) and inventory position — gracefully empty when that data doesn't exist, so a build never fails without it
+- [x] Streamlit dashboard sourced entirely from the tested KPI models; margin/inventory sections hidden when their data is absent
 - [x] Local `make security-check` and full-pipeline CI (synthetic data → Silver → dbt build → dashboard smoke test) with zero credentials
 
 ## What's next

@@ -64,9 +64,12 @@ The metric layer, sourced only from the facts/dimensions above. Consumed by the 
 | `kpi_sales_by_hour` | One row per hour (0–23) | Net sales, orders |
 | `kpi_payment_methods` | One row per tender type | Amount collected, processing fees, share of total |
 | `rpt_order_payment_reconciliation` | One row per order id | Order total vs. paid, `variance_cents`, `reconciliation_status` |
-| `kpi_margin_by_category` | One row per category | Net sales, COGS, gross profit, margin %, cost coverage % (costed lines only) |
-| `kpi_margin_by_vendor` | One row per vendor | Net sales, COGS, gross profit, margin % (costed lines only) |
-| `kpi_inventory_position` | One row per variation | On-hand, units sold (30d), days of inventory, `stock_status` (reorder signal) |
+| `kpi_item_sales` | One row per item variation | `item_name`, `category_name`, units this/last week, this/last month, `avg_weekly_units_4wk`, `wow_trend_pct`, `units_total`, first/last sold |
+| `kpi_item_weekly_sales` | One row per item per ISO week | `week_start`, `variation_id`, `item_name`, `units_sold`, `orders`, `net_sales_cents` |
+| `kpi_item_forecast` | One row per item per future week (next 4) | `forecast_week_start`, `weeks_ahead`, `forecast_units`, `method` (linear_trend / avg_fallback), `weeks_of_history` |
+| `kpi_margin_by_category` | One row per category | Net sales, COGS, gross profit, margin %, cost coverage % (costed lines only; empty without vendor costs) |
+| `kpi_margin_by_vendor` | One row per vendor | Net sales, COGS, gross profit, margin % (empty without vendor costs) |
+| `kpi_inventory_position` | One row per variation | On-hand, units sold (30d), days of inventory, `stock_status` (empty without inventory tracking) |
 
 ## Conventions
 

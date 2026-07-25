@@ -7,9 +7,8 @@ flowchart LR
     B --> C[Bronze Raw JSON]
     C --> D[Silver Parquet lake]
     D --> E[Gold facts & dimensions]
-    E --> K[KPI + margin + inventory models]
+    E --> K[KPI, item sales & forecast]
     K --> F[Streamlit dashboard]
-    K -.-> G[Forecasting - future]
 ```
 
 ## Layers
@@ -101,9 +100,19 @@ A key semantic: **net sales = gross − discount, excluding tax** (fixed in Silv
 
 **Internal vs. external reconciliation:** this is *internal* reconciliation — the pipeline agreeing with itself, which catches transformation bugs. Reconciling RetailPulse's totals against Square's own **Reporting API / Dashboard** figures (proving the extraction captured everything Square recorded) is a separate, stronger check that is deferred: the Reporting API is unreliable/limited in Sandbox, so a meaningful external reconciliation needs Production, which is out of scope for these milestones.
 
-### Vendor costs, gross margin, and inventory (M5, implemented)
+### Item-level sales and forecasting (implemented)
 
-**Inventory.** `extract_inventory` pulls current IN_STOCK counts (read-only). Silver dedupes them per `(variation, location, state)` by `calculated_at` → `inventory_snapshots.parquet` → `fact_inventory_snapshot` (grained one row per variation/location/snapshot time). `kpi_inventory_position` joins on-hand to trailing-30-day sales velocity to estimate days-of-inventory and a fixed-threshold reorder signal (`reorder_soon` / `watch` / `ok` / `no_recent_sales`). The learned, forecast-driven version of this is deferred to M9.
+This is the core analytics layer, and it works against any Square store with **no merchant-side setup** — it's built purely from order line items.
+
+`kpi_item_weekly_sales` is the base time series: one row per item variation per ISO week (units, orders, net sales). `kpi_item_sales` summarizes each item — units this week / last complete week / this month / last month, a trailing 4-week average, week-over-week trend, and first/last sold. Item names come from the line item as captured at sale time (carried on `fact_order_line`), so they survive later catalog edits or deletions.
+
+`kpi_item_forecast` projects the next 4 weeks per item. The method is deliberately simple and explainable: an ordinary least-squares linear trend (DuckDB `regr_slope`/`regr_intercept`) fit to each item's weekly units over the last up-to-8 complete weeks, projected forward and floored at 0; items with under 2 weeks of history fall back to their running average. `method` records which path produced each number. Calendar seasonality (holiday weeks) is **not** modeled yet — that needs a year+ of history and is a planned enhancement; the models don't pretend otherwise.
+
+### Vendor costs, gross margin, and inventory (M5, implemented — optional)
+
+These are **optional** layers: they only produce data when their source exists, and the build never fails without it. Without inventory tracking, the inventory models are simply empty; without a costs file, the margin models show no coverage. `make dbt-build` guarantees a header-only `vendor_costs.csv` exists so the CSV read never errors, and empty inventory Parquet is handled natively.
+
+**Inventory.** `extract_inventory` pulls current IN_STOCK counts (read-only). Silver dedupes them per `(variation, location, state)` by `calculated_at` → `inventory_snapshots.parquet` → `fact_inventory_snapshot` (grained one row per variation/location/snapshot time). `kpi_inventory_position` joins on-hand to trailing-30-day sales velocity to estimate days-of-inventory and a fixed-threshold reorder signal (`reorder_soon` / `watch` / `ok` / `no_recent_sales`).
 
 **Vendor costs.** Acquisition costs are **not** in Square — they are operator-maintained reference data at `data/input/vendor_costs.csv` (Git-ignored; real cost data is business-sensitive and never committed). dbt reads the CSV directly as a `reference` source via `read_csv`; `scripts/generate_synthetic_vendor_costs.py` builds it from the Silver catalog (synthetic costs for demo/CI, or a fill-in template against a real catalog). `dim_vendor` is derived from it.
 
@@ -111,7 +120,7 @@ A key semantic: **net sales = gross − discount, excluding tax** (fixed in Silv
 
 ### Streamlit dashboard (implemented)
 
-`dashboard/app.py` reads `data/gold/warehouse.duckdb` **read-only** and renders the KPI models: headline tiles (including COGS / gross profit / margin / cost coverage), a daily-sales trend, category/weekday/hour breakdowns, payment-method mix, a live reconciliation status banner, gross-profit-by-category, and an inventory-position table with reorder flags. It contains no business SQL of its own — every figure is `select … from main_marts.kpi_*` — so the dashboard and the tested warehouse cannot drift apart. Streamlit is an optional (`dashboard`) dependency, kept out of the CI/pipeline dependency set; `scripts/smoke_dashboard_queries.py` guards the dashboard↔warehouse contract in CI without installing Streamlit.
+`dashboard/app.py` reads `data/gold/warehouse.duckdb` **read-only** and renders the KPI models: headline tiles, a live reconciliation banner, a **per-item sales table** (this/last week, this month, 4-week average, WoW trend), a **next-4-weeks forecast** (per-week total tiles plus an item × week grid), daily-sales trend, category/weekday/hour breakdowns, and payment-method mix. Margin (COGS / gross profit / margin / coverage tiles + by-category) and inventory sections render **only when that data exists**, so a store without costs or stock tracking sees a clean sales-and-forecast dashboard. It contains no business SQL of its own — every figure is `select … from main_marts.kpi_*` — so the dashboard and the tested warehouse cannot drift apart. Streamlit is an optional (`dashboard`) dependency, kept out of the CI/pipeline dependency set; `scripts/smoke_dashboard_queries.py` guards the dashboard↔warehouse contract in CI without installing Streamlit.
 
 Run it with `make demo-data` (build the warehouse from synthetic data) then `make dashboard`.
 
