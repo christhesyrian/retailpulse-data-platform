@@ -25,12 +25,17 @@ sources:
   - name: reference
     description: >
       Operator-maintained reference data that does NOT come from Square.
-      vendor_costs is a git-ignored CSV under data/input/ (real acquisition
-      costs are business data and must never be committed); dbt-duckdb reads
-      it directly via read_csv. Generate/refresh it with
-      scripts/generate_synthetic_vendor_costs.py.
+      vendor_costs is OPTIONAL — a git-ignored CSV under data/input/ (real
+      acquisition costs are business data and must never be committed).
+      Explicit column types are declared so a header-only file (no cost data
+      yet) reads as zero rows rather than failing type inference. `make
+      dbt-build` guarantees the file exists (header-only if you haven't
+      supplied one), so margin models simply show no coverage when costs are
+      absent instead of breaking the build.
     meta:
+      # auto_detect handles a header-only file (no cost data yet) as zero rows
+      # with all-VARCHAR columns; stg_vendor_costs try_casts unit_cost_cents.
       external_location: "read_csv('{{ env_var('RETAILPULSE_INPUT_DIR', 'data/input') }}/{name}.csv', header=true, auto_detect=true)"
     tables:
       - name: vendor_costs
-        description: One row per item variation — vendor and unit acquisition cost in cents.
+        description: One row per item variation — vendor and unit acquisition cost in cents (optional).
