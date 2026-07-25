@@ -19,7 +19,7 @@ Bronze preserves the Square response verbatim inside a `payload` key, alongside 
 | Input | Location | Contents |
 |---|---|---|
 | `vendor_costs.csv` | `data/input/` (Git-ignored) | One row per variation: `variation_id`, `item_name`, `category_name`, `vendor_name`, `unit_cost_cents`. Real acquisition costs are business data and never committed; generate synthetic/template with `scripts/generate_synthetic_vendor_costs.py`. |
-| `category_overrides.csv` | `data/input/` (Git-ignored) | Optional `raw_category,canonical_category` map to merge typo/synonym categories Square can't (e.g. `SCTRATCHER`→`SCRATCHER`). Applied in `dim_item` on top of generic uppercase/trim normalization. Generate a starter with `scripts/generate_category_overrides.py`. |
+| `category_overrides.csv` | `data/input/` (Git-ignored) | Optional `raw_category,canonical_category` map to merge typo/synonym categories Square can't (e.g. a mis-spelled `BEVERGE`→`BEVERAGE`). Applied in `dim_item` on top of generic uppercase/trim normalization. Generate a starter with `scripts/generate_category_overrides.py`. |
 
 ## Silver (implemented — `data/silver/*.parquet`, the local lake, rebuilt from Bronze on every run)
 

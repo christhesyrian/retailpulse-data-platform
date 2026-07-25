@@ -6,8 +6,8 @@
 -- category_name is NORMALIZED here so every downstream report rolls up
 -- consistently: generic uppercase/trim/whitespace collapse (merges
 -- 'Beer'/'BEER'), then the optional category_overrides map (merges typos and
--- synonyms like 'SCTRATCHER' -> 'SCRATCHER'). category_name_raw preserves the
--- original for traceability. The Square catalog itself is never modified.
+-- synonyms, e.g. a mis-spelled 'BEVERGE' -> 'BEVERAGE'). category_name_raw
+-- preserves the original for traceability. The Square catalog is never modified.
 with items as (
     select * from {{ ref('stg_catalog_items') }}
 ),

@@ -42,6 +42,6 @@ sources:
       - name: category_overrides
         description: >
           Optional raw_category -> canonical_category map to merge typos and
-          synonyms Square's catalog can't (e.g. SCTRATCHER -> SCRATCHER). Also
-          git-ignored under data/input/; generate a starter with
-          scripts/generate_category_overrides.py.
+          synonyms Square's catalog can't (e.g. a mis-spelled BEVERGE ->
+          BEVERAGE). Also git-ignored under data/input/; generate a starter
+          with scripts/generate_category_overrides.py.

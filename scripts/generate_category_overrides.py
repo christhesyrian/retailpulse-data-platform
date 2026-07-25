@@ -4,8 +4,8 @@
 Lists every distinct raw category name (with how many items and how much it
 sold, if a warehouse is available) and pre-fills `canonical_category` with the
 generic-normalized value (uppercase/trim). You then edit the rows that are
-typos or synonyms — e.g. change `SCTRATCHER`'s canonical to `SCRATCHER` — and
-rebuild. Rows left unchanged are ignored (raw already equals canonical).
+typos or synonyms — e.g. change a mis-spelled `BEVERGE`'s canonical to
+`BEVERAGE` — and rebuild. Rows left unchanged are ignored (raw == canonical).
 
 Output goes to `data/input/category_overrides.csv` (git-ignored), so your real
 category taxonomy stays local. The Square catalog is never modified.
@@ -71,8 +71,8 @@ def main() -> int:
 
     print(
         f"Wrote {len(seen)} category rows to {out_path}.\n"
-        "Edit the 'canonical_category' column for typos/synonyms (e.g. "
-        "SCTRATCHER -> SCRATCHER), then run `make dbt-build`."
+        "Edit the 'canonical_category' column for typos/synonyms (e.g. a "
+        "mis-spelled BEVERGE -> BEVERAGE), then run `make dbt-build`."
     )
     return 0
 
