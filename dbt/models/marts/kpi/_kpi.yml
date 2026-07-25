@@ -97,3 +97,39 @@ models:
           - accepted_values:
               arguments:
                 values: ['no_recent_sales', 'reorder_soon', 'watch', 'ok']
+
+  - name: kpi_item_weekly_sales
+    description: Per-item, per-ISO-week units/orders/net sales — the base sales time series.
+    columns:
+      - name: variation_id
+        data_tests:
+          - not_null
+      - name: week_start
+        data_tests:
+          - not_null
+
+  - name: kpi_item_sales
+    description: Per-item sales summary (this/last week, this/last month, 4-wk avg, trend).
+    columns:
+      - name: variation_id
+        data_tests:
+          - not_null
+          - unique
+      - name: units_total
+        data_tests:
+          - not_null
+
+  - name: kpi_item_forecast
+    description: Per-item weekly sales forecast for the next 4 weeks (linear trend / avg fallback).
+    columns:
+      - name: variation_id
+        data_tests:
+          - not_null
+      - name: forecast_units
+        data_tests:
+          - not_null
+      - name: method
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['linear_trend', 'avg_fallback']

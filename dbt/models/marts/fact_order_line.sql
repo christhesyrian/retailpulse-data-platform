@@ -15,6 +15,9 @@ select
     order_lines.order_id as square_order_id,
     order_lines.line_item_uid as square_line_item_uid,
     order_lines.catalog_object_id,
+    -- name captured on the line at sale time (survives later catalog edits/deletes)
+    order_lines.item_name,
+    order_lines.variation_name,
     locations.location_key,
     items.item_key,
     order_lines.closed_at,
