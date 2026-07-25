@@ -39,3 +39,9 @@ sources:
     tables:
       - name: vendor_costs
         description: One row per item variation — vendor and unit acquisition cost in cents (optional).
+      - name: category_overrides
+        description: >
+          Optional raw_category -> canonical_category map to merge typos and
+          synonyms Square's catalog can't (e.g. SCTRATCHER -> SCRATCHER). Also
+          git-ignored under data/input/; generate a starter with
+          scripts/generate_category_overrides.py.

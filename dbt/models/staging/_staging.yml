@@ -49,3 +49,11 @@ models:
         data_tests:
           - not_null
           - unique
+
+  - name: stg_category_overrides
+    description: Optional raw->canonical category rename map, deduped on the normalized raw.
+    columns:
+      - name: raw_norm
+        data_tests:
+          - not_null
+          - unique
