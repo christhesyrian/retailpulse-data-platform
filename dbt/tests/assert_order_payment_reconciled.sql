@@ -1,6 +1,8 @@
--- Fails the build if any order and its payment(s) both exist but their
--- totals disagree. Orphaned orders/payments (one side missing) are
--- expected in the Sandbox and are intentionally NOT flagged here.
+-- Surfaces orders where LESS was collected than recorded sales+tax ('short')
+-- by more than a cent. This is a WARNING, not a build failure: shorts can be
+-- legitimate (refunds, comps, unpaid balances) and real stores always have a
+-- few. Overpaid orders (tips) are expected and intentionally not flagged.
+{{ config(severity='warn') }}
 select *
 from {{ ref('rpt_order_payment_reconciliation') }}
-where reconciliation_status = 'mismatch'
+where reconciliation_status = 'short'

@@ -63,9 +63,9 @@ def main() -> None:
         return
 
     st.caption(
-        "Demonstration data only — generated synthetic records or Square **Sandbox** data. "
-        "No real customer, payment, or business information is shown. "
-        "Every metric is sourced from a tested dbt KPI model."
+        "Every metric comes from a tested dbt KPI model. The committed public demo uses "
+        "synthetic data; when this warehouse is built from your live Square store these are "
+        "your real figures — keep this local and don't publish them."
     )
 
     summary = query("select * from main_marts.kpi_summary").iloc[0]
@@ -104,16 +104,28 @@ def main() -> None:
         "select reconciliation_status, count(*) as n "
         "from main_marts.rpt_order_payment_reconciliation group by 1"
     )
-    status_counts = dict(zip(recon["reconciliation_status"], recon["n"]))
-    mismatches = int(status_counts.get("mismatch", 0))
-    matched = int(status_counts.get("matched", 0))
-    if mismatches == 0:
+    sc = dict(zip(recon["reconciliation_status"], recon["n"].astype(int)))
+    matched = sc.get("matched", 0)
+    overpaid = sc.get("overpaid", 0)  # tips: collected > recorded sales+tax
+    short = sc.get("short", 0)
+    pay_no_order = sc.get("payment_without_order", 0)
+    tie = matched + overpaid
+    total_orders = tie + short + sc.get("order_without_payment", 0)
+    if total_orders:
         st.success(
-            f"✅ Reconciliation passed — {matched:,} orders tie exactly to payments collected "
-            "(net sales + tax = amount collected). No mismatches."
+            f"✅ {tie:,} of {total_orders:,} orders reconcile to payments "
+            f"({matched:,} to the cent, {overpaid:,} paid over — tips)."
         )
-    else:
-        st.error(f"⚠️ {mismatches:,} order(s) do not reconcile to their payments.")
+    notes = []
+    if short:
+        notes.append(f"{short:,} order(s) collected **less** than recorded sales (refunds / comps / unpaid)")
+    if pay_no_order:
+        notes.append(
+            f"{pay_no_order:,} payment(s) have no matching order in this pull "
+            "(outside the date window, or a location whose orders weren't extracted)"
+        )
+    if notes:
+        st.caption("Reconciliation notes: " + "; ".join(notes) + ".")
 
     st.divider()
 

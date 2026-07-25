@@ -66,7 +66,7 @@ models:
           - not_null
           - accepted_values:
               arguments:
-                values: ['matched', 'mismatch', 'order_without_payment', 'payment_without_order']
+                values: ['matched', 'overpaid', 'short', 'order_without_payment', 'payment_without_order']
 
   - name: kpi_margin_by_category
     description: Gross profit and margin by category (costed lines only).

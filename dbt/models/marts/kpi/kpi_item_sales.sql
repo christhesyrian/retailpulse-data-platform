@@ -3,7 +3,9 @@
 -- most recent complete week. All windows are relative to current_date.
 with lines as (
     select
-        catalog_object_id as variation_id,
+        -- custom (non-catalog) line items key on their typed name; see
+        -- kpi_item_weekly_sales for the rationale.
+        coalesce(catalog_object_id, 'custom:' || coalesce(item_name, 'unknown')) as variation_id,
         item_name,
         variation_name,
         square_order_id,

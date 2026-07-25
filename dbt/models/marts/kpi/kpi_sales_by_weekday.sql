@@ -6,6 +6,7 @@ with lines as (
         square_order_id,
         net_sales_cents
     from {{ ref('fact_order_line') }}
+    where closed_at is not null
 )
 
 select
