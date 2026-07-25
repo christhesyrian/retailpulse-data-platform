@@ -31,6 +31,9 @@ EXPECTED = [
     ("main_marts.rpt_order_payment_reconciliation", False),
     ("main_marts.kpi_margin_by_category", False),
     ("main_marts.kpi_inventory_position", False),
+    ("main_marts.kpi_item_sales", True),
+    ("main_marts.kpi_item_weekly_sales", True),
+    ("main_marts.kpi_item_forecast", False),
 ]
 
 

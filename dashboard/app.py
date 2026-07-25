@@ -39,6 +39,16 @@ def dollars(cents: float) -> str:
     return f"${cents / 100:,.2f}"
 
 
+def units(value: float) -> str:
+    return f"{value:,.0f}"
+
+
+def trend(pct: float) -> str:
+    if pd.isna(pct):
+        return "—"
+    return f"{pct:+.0f}%"
+
+
 def main() -> None:
     st.set_page_config(page_title="RetailPulse KPIs", page_icon="🛒", layout="wide")
     st.title("🛒 RetailPulse — Sales KPI Dashboard")
@@ -104,6 +114,77 @@ def main() -> None:
         )
     else:
         st.error(f"⚠️ {mismatches:,} order(s) do not reconcile to their payments.")
+
+    st.divider()
+
+    # --- Item sales (the core question: what sells, how much, trending) ------
+    st.subheader("Item sales")
+    st.caption(
+        "Units sold per item — this week so far, last complete week, this month, plus a "
+        "4-week average and week-over-week trend. Sortable; click a column header."
+    )
+    items = query(
+        "select item_name, category_name, units_this_week, units_last_week, units_this_month, "
+        "avg_weekly_units_4wk, wow_trend_pct, units_total, last_sold_at "
+        "from main_marts.kpi_item_sales order by units_total desc"
+    )
+    if items.empty:
+        st.info("No item sales yet.")
+    else:
+        item_display = pd.DataFrame(
+            {
+                "Item": items["item_name"],
+                "Category": items["category_name"].fillna("—"),
+                "This week": items["units_this_week"].map(units),
+                "Last week": items["units_last_week"].map(units),
+                "This month": items["units_this_month"].map(units),
+                "Avg/wk (4wk)": items["avg_weekly_units_4wk"].map(lambda v: f"{v:.1f}"),
+                "WoW": items["wow_trend_pct"].map(trend),
+                "Total sold": items["units_total"].map(units),
+                "Last sold": items["last_sold_at"],
+            }
+        )
+        st.dataframe(item_display, hide_index=True, use_container_width=True)
+
+    st.divider()
+
+    # --- Forecast: projected units for upcoming weeks -----------------------
+    st.subheader("Sales forecast — next 4 weeks")
+    st.caption(
+        "Projected units per item per week, from a simple linear trend over recent weeks. "
+        "These are estimates; accuracy grows with history, and calendar seasonality "
+        "(holidays) is not modeled yet."
+    )
+    fc = query(
+        "select item_name, forecast_week_start, weeks_ahead, forecast_units "
+        "from main_marts.kpi_item_forecast"
+    )
+    if fc.empty:
+        st.info("Not enough weekly sales history to forecast yet — needs at least a couple of weeks.")
+    else:
+        totals = (
+            fc.groupby(["forecast_week_start", "weeks_ahead"], as_index=False)["forecast_units"]
+            .sum()
+            .sort_values("weeks_ahead")
+        )
+        tcols = st.columns(len(totals))
+        for i, (_, r) in enumerate(totals.iterrows()):
+            label = "Next week" if int(r["weeks_ahead"]) == 1 else f"In {int(r['weeks_ahead'])} weeks"
+            tcols[i].metric(
+                f"{label}", f"{int(r['forecast_units']):,} units",
+                help=f"Week starting {r['forecast_week_start']}",
+            )
+        st.caption("Projected units by item and week (read the column for the week you care about):")
+        pivot = (
+            fc.pivot_table(
+                index="item_name", columns="forecast_week_start",
+                values="forecast_units", aggfunc="sum",
+            )
+            .fillna(0)
+            .astype(int)
+        )
+        pivot.index.name = "Item"
+        st.dataframe(pivot, use_container_width=True)
 
     st.divider()
 
@@ -202,26 +283,19 @@ def main() -> None:
         )
         st.dataframe(pay_display, hide_index=True, use_container_width=True)
 
-    st.divider()
-
-    # --- Gross margin (M5) --------------------------------------------------
-    st.subheader("Gross profit & margin by category")
-    st.caption(
-        "Gross profit = net sales − cost of goods sold, using operator-maintained vendor "
-        "costs. Only lines with a known cost are included; this is true profit, not revenue."
-    )
+    # --- Gross margin (optional — only shown when vendor costs are on file) --
     margin = query(
         "select category_name, net_sales_cents, gross_profit_cents, gross_margin_pct, "
         "line_cost_coverage_pct from main_marts.kpi_margin_by_category "
-        "order by gross_profit_cents desc"
+        "where gross_profit_cents is not null order by gross_profit_cents desc"
     )
-    if margin.empty or margin["gross_profit_cents"].isna().all():
-        st.info(
-            "No vendor costs on file yet. Generate them with "
-            "`python3 scripts/generate_synthetic_vendor_costs.py` (or add your own "
-            "`data/input/vendor_costs.csv`) and rebuild."
+    if not margin.empty:
+        st.divider()
+        st.subheader("Gross profit & margin by category")
+        st.caption(
+            "Gross profit = net sales − cost of goods sold, using operator-maintained vendor "
+            "costs. Only lines with a known cost are included; this is true profit, not revenue."
         )
-    else:
         mleft, mright = st.columns([3, 2])
         with mleft:
             margin["Gross profit ($)"] = margin["gross_profit_cents"] / 100
@@ -249,22 +323,19 @@ def main() -> None:
             )
             st.dataframe(margin_display, hide_index=True, use_container_width=True)
 
-    st.divider()
-
-    # --- Inventory position (M5) -------------------------------------------
-    st.subheader("Inventory position & reorder signal")
-    st.caption(
-        "Days of inventory = on-hand ÷ average daily units sold (trailing 30 days). "
-        "Reorder heuristic is a fixed threshold, not a demand forecast (that's a later milestone)."
-    )
+    # --- Inventory position (optional — only shown when stock data exists) ---
     inv = query(
         "select item_name, category_name, quantity_on_hand, units_sold_30d, "
         "days_of_inventory, stock_status from main_marts.kpi_inventory_position "
         "order by days_of_inventory nulls last"
     )
-    if inv.empty:
-        st.info("No inventory snapshots found. Run an extraction (or the synthetic generator) first.")
-    else:
+    if not inv.empty:
+        st.divider()
+        st.subheader("Inventory position & reorder signal")
+        st.caption(
+            "Days of inventory = on-hand ÷ average daily units sold (trailing 30 days). "
+            "Reorder heuristic is a fixed threshold, not a demand forecast (that's a later milestone)."
+        )
         reorder_count = int((inv["stock_status"] == "reorder_soon").sum())
         if reorder_count:
             st.warning(f"⚠️ {reorder_count} item(s) flagged **reorder_soon** (under ~7 days of stock).")
