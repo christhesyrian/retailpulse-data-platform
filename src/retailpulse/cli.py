@@ -19,7 +19,11 @@ from retailpulse.extract.jobs import (
 from retailpulse.square_client import SquareAPIError, SquareClient
 from retailpulse.transform.silver import run_silver_transform
 
-MAX_EXTRACT_DAYS = 90
+# A year of history. This is the ceiling on a single --days window, not a
+# default: the guard exists so a typo can't kick off an unexpectedly large
+# extraction, and 365 is what the dashboard's longest period needs to be
+# meaningful (it also lets a year-over-year comparison exist at all).
+MAX_EXTRACT_DAYS = 365
 
 
 def build_parser() -> argparse.ArgumentParser:
