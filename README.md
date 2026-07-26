@@ -50,14 +50,23 @@ flowchart LR
 
 The heart of the platform: what each item sells, over time, and what it will sell next.
 
-- **Item sales** (`kpi_item_sales`, `kpi_item_weekly_sales`): per-item units sold this week / last week / this month, a 4-week average, week-over-week trend, and a full weekly history — built straight from order line items, so it works against any Square store with **no setup on the merchant's side**.
-- **Forecasting** (`kpi_item_forecast`): projected units per item for the next 4 weeks, from a simple, explainable linear trend over recent weeks (falls back to a running average with little history). Honest estimates — calendar seasonality is a planned enhancement, not yet modeled.
+- **Item sales** (`kpi_item_sales`, `kpi_item_weekly_sales`): per-item units and revenue for any period the dashboard offers, each against the equivalent stretch before it, plus a full weekly history — built straight from order line items, so it works against any Square store with **no setup on the merchant's side**.
+- **Forecasting** (`kpi_item_forecast`): projected units per item for the next 4 weeks, from a simple, explainable linear trend over recent weeks (falls back to a running average with little history). The trend is fitted on a **zero-filled** weekly series, so weeks an item didn't sell count against it rather than being dropped — without that, anything intermittent projects far too high. Honest estimates: calendar seasonality is a planned enhancement, not yet modeled.
+
+### Everything is period-aware
+
+`dim_period` defines the windows the dashboard offers (last 7 / 30 / 90 / 365 days, and all time), each with the equivalent window immediately before it. The KPI models are built at **(period, key)** grain, so switching period in the dashboard selects pre-computed, tested rows rather than triggering any recalculation in the presentation layer.
+
+Two details that keep the comparisons truthful:
+
+- Windows anchor on the **most recent day with sales**, not on today. Anchoring on today would drop empty days into the current window whenever the extract is stale and show a false decline.
+- A comparison is **suppressed** (null, rendered as "—") when the extract doesn't fully cover the earlier window. Comparing a 90-day window against two days of prior history reads as +4,659%, which is worse than showing nothing.
 
 ### Optional: inventory and vendor costs (only active when you have that data)
 
 M5 added inventory and gross-margin analysis, but both are **optional** and only light up when their source data exists — the pipeline never breaks without them:
 
-- **Inventory** (`fact_inventory_snapshot`, `kpi_inventory_position`): read-only Square inventory counts → days-of-inventory + reorder signal. Empty (and hidden in the dashboard) if your store doesn't track stock.
+- **Inventory** (`fact_inventory_snapshot`, `kpi_inventory_position`): read-only Square inventory counts → days-of-inventory + reorder signal. Still built and tested, but **not surfaced in the dashboard**: against the real store, 480 of 1,584 items carried negative on-hand counts (stock that was sold but never recorded as received), which made the reorder signal mostly noise. Reinstating it needs the counts corrected at source first.
 - **Vendor costs → gross margin** (`fact_order_line_margin`, `kpi_margin_by_*`): if you maintain a Git-ignored `data/input/vendor_costs.csv`, the pipeline computes **COGS and gross profit** (`gross_profit = net_sales − COGS`). Margin is only computed where a cost is on file, and coverage is reported — profit is never fabricated from missing costs. No costs file → margin simply shows no coverage.
 - **Production safeguard**: contacting production requires an explicit `RETAILPULSE_ALLOW_PRODUCTION=1` opt-in per command, so a real store can't be hit by accident. See [`docs/production-switch.md`](docs/production-switch.md) for the read-only production-validation guide.
 
@@ -65,7 +74,8 @@ M5 added inventory and gross-margin analysis, but both are **optional** and only
 
 - **`dim_date`** and tested **KPI models** (`dbt/models/marts/kpi/`): daily sales, sales by category, by weekday, by hour, payment-method mix, and a single-row headline summary. Metric definitions live in version-controlled, tested SQL — not in the dashboard.
 - **Reconciliation** (`rpt_order_payment_reconciliation` + a dbt test): every order's recorded total (net sales + tax) is asserted to equal what was collected in payments, order by order. This is *internal* reconciliation (the pipeline agrees with itself); reconciling against Square's own Reporting API totals is production-only future work (documented in [`docs/architecture.md`](docs/architecture.md)).
-- **Streamlit dashboard** (`dashboard/app.py`): KPI tiles, daily sales trend, category/weekday/hour breakdowns, payment mix, and a live reconciliation status banner. It runs no business logic of its own — every number comes from a tested `kpi_*` model, so the dashboard and warehouse can't disagree.
+- **Design system** (`.streamlit/config.toml` + `dashboard/design.py`): the palette, type scale, radii and chart theme live in one place. Colours are a validated data-viz palette — categorical slot 1 (blue) and slot 2 (orange) on warm near-white / near-black surfaces — and both modes clear all six checks (lightness band, chroma floor, colour-vision-deficiency separation, normal-vision floor, contrast) against their own surface. The bulk goes through Streamlit's own theming API rather than CSS injected at generated class names, so it survives upgrades; `design.py` carries only what that API can't express, plus the matching Altair theme so the charts belong to the same system as the chrome.
+- **Streamlit dashboard** (`dashboard/app.py`): a period control driving four tabs — Overview (KPI tiles with change vs. the previous equivalent window, daily sales trend, category and time-of-day breakdowns), Items (searchable, filterable item table with per-item history and projection), Forecast, and Back office (reconciliation, payment mix). It runs no business logic of its own — every number comes from a tested `kpi_*` model, so the dashboard and warehouse can't disagree. Search, filtering, sorting and top-N choose which model rows to show; they never compute a figure.
 
 **Why DuckDB instead of a hosted warehouse:** DuckDB is a free, embedded, columnar OLAP database — no server, no account, no cost — and `dbt-duckdb` is an officially supported adapter. Reading Parquet directly off disk as the source layer is the same pattern real lakehouses use with S3 + Delta/Iceberg, just running locally. This keeps the warehouse layer genuinely representative of the modern data stack without requiring cloud credentials for a portfolio project.
 
@@ -146,10 +156,11 @@ Edit `unit_cost_cents` / `vendor_name` with your real figures, then `make dbt-bu
 - [x] Read-only extraction of locations, catalog, orders, payments, and inventory counts
 - [x] Silver normalization written as Parquet (dedup, catalog join, line-item flattening, card-detail minimization, inventory snapshots)
 - [x] dbt-duckdb Gold layer: dimensions, facts, and tested KPI models (sales, reconciliation, per-item sales, forecast, and optional margin/inventory)
-- [x] **Per-item sales analytics** (`kpi_item_sales`, `kpi_item_weekly_sales`) — units this/last week and month, 4-week average, WoW trend, weekly history
-- [x] **Sales forecasting** (`kpi_item_forecast`) — projected units per item for the next 4 weeks (linear trend, honest fallback)
-- [x] Optional gross margin (from operator-maintained vendor costs) and inventory position — gracefully empty when that data doesn't exist, so a build never fails without it
-- [x] Streamlit dashboard sourced entirely from the tested KPI models; margin/inventory sections hidden when their data is absent
+- [x] **Per-item sales analytics** (`kpi_item_sales`, `kpi_item_weekly_sales`) — units and revenue per period vs. the equivalent window before it, plus weekly history
+- [x] **Sales forecasting** (`kpi_item_forecast`) — projected units per item for the next 4 weeks (linear trend on a zero-filled series, honest fallback)
+- [x] **Period-aware KPI layer** (`dim_period`) — every headline model built at (period, key) grain with prior-window comparisons, and comparisons suppressed where history doesn't support them
+- [x] Optional gross margin (from operator-maintained vendor costs) — gracefully empty when that data doesn't exist, so a build never fails without it
+- [x] Streamlit dashboard sourced entirely from the tested KPI models; margin section hidden when its data is absent
 - [x] Local `make security-check` and full-pipeline CI (synthetic data → Silver → dbt build → dashboard smoke test) with zero credentials
 
 ## What's next

@@ -44,6 +44,7 @@ Implements [`sql/warehouse_schema.sql`](../sql/warehouse_schema.sql)'s target gr
 | `fact_order_line` | One row per order line item | `order_line_key` (surrogate), `square_order_id`, `square_line_item_uid`, `location_key`, `item_key`, `closed_at`, `quantity`, `gross_sales_cents`, `discount_cents`, `tax_cents`, `net_sales_cents` |
 | `fact_payment` | One row per payment | `square_payment_id` (primary key), `square_order_id`, `location_key`, `created_at`, `updated_at`, `status`, `source_type`, `amount_cents`, `processing_fee_cents`, `currency` |
 | `dim_date` | One row per calendar date | `date_day`, `date_key`, `year`, `month`, `month_name`, `day_of_month`, `day_of_week` (1=Mon..7=Sun), `day_name`, `week_of_year`, `is_weekend` |
+| `dim_period` | One row per dashboard period | `period_label` (Last 7/30/90/365 days, All time), `period_days`, `period_order`, `period_start`, `period_end`, `prior_start`, `prior_end`, `prior_window_complete`, `as_of_date`. Anchored on the latest day with sales, not on today — see model comment |
 | `dim_vendor` | One row per vendor | `vendor_key` (surrogate), `vendor_name`, `variation_count` |
 | `fact_inventory_snapshot` | One row per variation/location/snapshot time | `inventory_snapshot_key` (surrogate), `square_catalog_object_id`, `item_key`, `location_key`, `square_location_id`, `state`, `quantity_on_hand`, `calculated_at` |
 | `fact_order_line_margin` | One row per order line | `order_line_key`, `item_key`, `vendor_key`, `category_name`, `vendor_name`, `quantity`, `net_sales_cents`, `unit_cost_cents`, `cogs_cents`, `gross_profit_cents`, `gross_margin_pct`, `has_cost` |
@@ -56,21 +57,24 @@ Every surrogate key and natural key has a dbt `not_null`/`unique` test; every fa
 
 The metric layer, sourced only from the facts/dimensions above. Consumed by the Streamlit dashboard.
 
+Models marked **period-aware** are built at `(period_label, key)` grain by joining `dim_period`, and each carries the same measures over the previous equivalent window plus the change against it. Those comparison columns are **null when `dim_period.prior_window_complete` is false** — i.e. when the extract doesn't cover the earlier window — so the dashboard shows "—" instead of a number the data can't support.
+
 | Model | Grain | Notes |
 |---|---|---|
-| `kpi_summary` | One row (overall) | Net sales, orders, AOV, units/order, discounts, tax, processing fees, total collected |
-| `kpi_daily_sales` | One row per calendar day | Left-joined from `dim_date`; zero-sales days appear as 0 |
-| `kpi_sales_by_category` | One row per category | Net sales, units, and share of total |
-| `kpi_sales_by_weekday` | One row per ISO weekday (1–7) | Net sales, orders, AOV |
-| `kpi_sales_by_hour` | One row per hour (0–23) | Net sales, orders |
-| `kpi_payment_methods` | One row per tender type | Amount collected, processing fees, share of total |
+| `kpi_summary` | **Period-aware** — one row per period | Net sales, orders, AOV, units/order, discounts, tax, processing fees, total collected; plus `prior_*` and `*_change_pct` |
+| `kpi_data_coverage` | One row (overall) | `first_sale_date`, `last_sale_date`, `days_covered`, `days_with_sales`, `weeks_covered`, `complete_weeks_covered`, `orders`, `items_sold`, `days_since_last_sale` |
+| `kpi_daily_sales` | One row per calendar day | Left-joined from `dim_date`; zero-sales days appear as 0. Includes `net_sales_7d_avg_cents` (null until 7 days exist) |
+| `kpi_sales_by_category` | **Period-aware** — one row per (period, category) | Net sales, units, share of the period total, and change vs. the prior window |
+| `kpi_sales_by_weekday` | **Period-aware** — one row per (period, ISO weekday 1–7) | Net sales, orders, AOV |
+| `kpi_sales_by_hour` | **Period-aware** — one row per (period, hour 0–23 UTC) | Net sales, orders |
+| `kpi_payment_methods` | **Period-aware** — one row per (period, tender type) | Amount collected, processing fees, share of the period total |
 | `rpt_order_payment_reconciliation` | One row per order id | Order total vs. paid, `variance_cents`, `reconciliation_status` |
-| `kpi_item_sales` | One row per item variation | `item_name`, `category_name`, units this/last week, this/last month, `avg_weekly_units_4wk`, `wow_trend_pct`, `units_total`, first/last sold |
-| `kpi_item_weekly_sales` | One row per item per ISO week | `week_start`, `variation_id`, `item_name`, `units_sold`, `orders`, `net_sales_cents` |
-| `kpi_item_forecast` | One row per item per future week (next 4) | `forecast_week_start`, `weeks_ahead`, `forecast_units`, `method` (linear_trend / avg_fallback), `weeks_of_history` |
+| `kpi_item_sales` | **Period-aware** — one row per (period, item variation) | `units`, `orders`, `net_sales_cents`, `avg_weekly_units`, `prior_units`, `units_change_pct`, `net_sales_change_pct`, `units_all_time`, first/last sold |
+| `kpi_item_weekly_sales` | One row per item per ISO week | `week_start`, `variation_id`, `item_name`, `units_sold`, `orders`, `net_sales_cents`. Grouped on (week, item) only — grouping on display names too would split one catalog id across rows |
+| `kpi_item_forecast` | One row per item per future week (next 4) | `forecast_week_start`, `weeks_ahead`, `forecast_units`, `method` (linear_trend / avg_fallback), `weeks_of_history`. Fitted on a **zero-filled** weekly series so quiet weeks count against the trend |
 | `kpi_margin_by_category` | One row per category | Net sales, COGS, gross profit, margin %, cost coverage % (costed lines only; empty without vendor costs) |
 | `kpi_margin_by_vendor` | One row per vendor | Net sales, COGS, gross profit, margin % (empty without vendor costs) |
-| `kpi_inventory_position` | One row per variation | On-hand, units sold (30d), days of inventory, `stock_status` (empty without inventory tracking) |
+| `kpi_inventory_position` | One row per variation | On-hand, units sold (30d), days of inventory, `stock_status`. Built and tested but **not shown in the dashboard** — see README |
 
 ## Conventions
 
