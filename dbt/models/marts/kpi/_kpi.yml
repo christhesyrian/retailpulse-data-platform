@@ -12,44 +12,81 @@ models:
         data_tests:
           - not_null
 
+  # The models below are keyed on (period_label, <key>). Composite uniqueness
+  # is asserted in tests/assert_period_kpi_grain.sql — dbt's built-in `unique`
+  # test is single-column only and dbt_utils isn't a dependency here.
   - name: kpi_sales_by_category
-    description: Net sales and unit volume by product category, with share of total.
+    description: >
+      Net sales and unit volume by product category per period, with share of
+      the period total and change vs. the previous equivalent window.
     columns:
+      - name: period_label
+        data_tests:
+          - not_null
       - name: category_name
         data_tests:
           - not_null
-          - unique
 
   - name: kpi_sales_by_weekday
-    description: Sales aggregated by ISO day of week (1=Monday..7=Sunday).
+    description: Sales by ISO day of week (1=Monday..7=Sunday), per period.
     columns:
+      - name: period_label
+        data_tests:
+          - not_null
       - name: day_of_week
         data_tests:
           - not_null
-          - unique
           - accepted_values:
               arguments:
                 values: [1, 2, 3, 4, 5, 6, 7]
 
   - name: kpi_sales_by_hour
-    description: Sales aggregated by hour of day (0..23).
+    description: Sales by hour of day (0..23, UTC), per period.
     columns:
+      - name: period_label
+        data_tests:
+          - not_null
       - name: hour_of_day
         data_tests:
           - not_null
-          - unique
 
   - name: kpi_payment_methods
-    description: Amount collected and processing fees by tender type.
+    description: Amount collected and processing fees by tender type, per period.
     columns:
+      - name: period_label
+        data_tests:
+          - not_null
       - name: source_type
         data_tests:
           - not_null
-          - unique
 
   - name: kpi_summary
-    description: Single-row headline KPIs for the dashboard.
+    description: >
+      Headline KPIs, one row per period, each with the previous equivalent
+      window and the change against it.
     columns:
+      - name: period_label
+        data_tests:
+          - not_null
+          - unique
+      - name: orders
+        data_tests:
+          - not_null
+
+  - name: kpi_data_coverage
+    description: >
+      Single-row description of the extracted window (date range, days, weeks,
+      orders, items) and how stale the most recent sale is.
+    columns:
+      - name: first_sale_date
+        data_tests:
+          - not_null
+      - name: last_sale_date
+        data_tests:
+          - not_null
+      - name: days_covered
+        data_tests:
+          - not_null
       - name: orders
         data_tests:
           - not_null
@@ -109,18 +146,25 @@ models:
           - not_null
 
   - name: kpi_item_sales
-    description: Per-item sales summary (this/last week, this/last month, 4-wk avg, trend).
+    description: >
+      Per-item sales per period, with the previous equivalent window and the
+      change against it. Keyed on (period_label, variation_id).
     columns:
+      - name: period_label
+        data_tests:
+          - not_null
       - name: variation_id
         data_tests:
           - not_null
-          - unique
-      - name: units_total
+      - name: units
         data_tests:
           - not_null
 
   - name: kpi_item_forecast
-    description: Per-item weekly sales forecast for the next 4 weeks (linear trend / avg fallback).
+    description: >
+      Per-item weekly sales forecast for the next 4 weeks (linear trend / avg
+      fallback), fitted on a zero-filled weekly series so weeks with no sales
+      count against the trend instead of being dropped.
     columns:
       - name: variation_id
         data_tests:

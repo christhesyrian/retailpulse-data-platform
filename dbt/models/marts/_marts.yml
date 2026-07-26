@@ -1,6 +1,27 @@
 version: 2
 
 models:
+  - name: dim_period
+    description: >
+      The time windows the dashboard offers (Last 7/30/90/365 days, All time)
+      with each window's bounds and the equivalent preceding window. Joining
+      against this is what makes the KPI models period-aware.
+    columns:
+      - name: period_label
+        data_tests:
+          - not_null
+          - unique
+      - name: period_order
+        data_tests:
+          - not_null
+          - unique
+      - name: period_start
+        data_tests:
+          - not_null
+      - name: period_end
+        data_tests:
+          - not_null
+
   - name: dim_location
     description: One row per Square location. SCD2 columns are placeholders — see model comment.
     columns:
