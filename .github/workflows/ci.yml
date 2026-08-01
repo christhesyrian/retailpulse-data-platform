@@ -47,8 +47,12 @@ jobs:
         run: python3 scripts/generate_synthetic_vendor_costs.py
 
       - name: Run dbt build against synthetic data
+        # ensure_dbt_inputs.py is the same step `make dbt-build` runs. The
+        # optional vendor-cost and category-override files must exist for the
+        # staging models to read, even when empty; CI used to skip that and
+        # only failed once an earlier step stopped failing first.
         run: |
-          mkdir -p data/gold
+          python3 scripts/ensure_dbt_inputs.py
           dbt build --project-dir dbt --profiles-dir dbt
         env:
           RETAILPULSE_SILVER_DIR: ${{ github.workspace }}/data/silver

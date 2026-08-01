@@ -23,9 +23,7 @@ silver:
 	. .venv/bin/activate && retailpulse transform-silver
 
 dbt-build:
-	mkdir -p data/gold data/input
-	@test -f data/input/vendor_costs.csv || printf 'variation_id,item_name,category_name,vendor_name,unit_cost_cents\n' > data/input/vendor_costs.csv
-	@test -f data/input/category_overrides.csv || printf 'raw_category,canonical_category\n' > data/input/category_overrides.csv
+	. .venv/bin/activate && $(DBT_ENV) python3 scripts/ensure_dbt_inputs.py
 	. .venv/bin/activate && $(DBT_ENV) dbt build --project-dir dbt --profiles-dir dbt
 
 dbt-docs:
