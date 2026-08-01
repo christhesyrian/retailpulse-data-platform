@@ -546,8 +546,9 @@ def render_when_you_sell(weekday: pd.DataFrame, hourly: pd.DataFrame) -> None:
     with st.container(border=True, height="stretch"):
         st.subheader(
             "When you sell",
-            help="Times come from Square in UTC, not store-local time — a late-evening "
-            "sale can land on the next day here.",
+            help="Your store's own local time. Square records every sale in UTC; "
+            "fact_order_line converts it using the location's timezone, so an evening "
+            "sale counts on the evening it happened.",
         )
         if weekday.empty:
             st.info("No sales in this period.")
@@ -581,10 +582,10 @@ def render_when_you_sell(weekday: pd.DataFrame, hourly: pd.DataFrame) -> None:
             alt.Chart(hr)
             .mark_bar(size=bar_width(len(hr), span=560), cornerRadiusEnd=design.CORNER_RADIUS)
             .encode(
-                x=alt.X("hour_of_day:O", title="Hour of day (UTC)", axis=alt.Axis(labelAngle=0)),
+                x=alt.X("hour_of_day:O", title="Hour of day", axis=alt.Axis(labelAngle=0)),
                 y=alt.Y("net_sales:Q", title=None, axis=alt.Axis(format="$,.0f")),
                 tooltip=[
-                    alt.Tooltip("hour_of_day:O", title="Hour (UTC)"),
+                    alt.Tooltip("hour_of_day:O", title="Hour"),
                     money_tip("net_sales:Q", "Sales"),
                     alt.Tooltip("orders:Q", title="Transactions", format=","),
                 ],

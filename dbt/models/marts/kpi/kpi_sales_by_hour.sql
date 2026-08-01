@@ -1,16 +1,18 @@
 -- Sales by hour of day, one row per (period, hour), to surface peak trading
 -- hours within the window the dashboard is showing.
 --
--- Hours come from closed_at, which Square records in UTC — so these are UTC
--- hours, not store-local ones. The dashboard labels them as such.
+-- Hours are the STORE's hours: closed_at_local is converted from Square's UTC
+-- timestamp in fact_order_line using the location's own timezone. Reading the
+-- hour straight off the UTC timestamp put this store's peak at 22:00–06:00,
+-- which is just the evening trade shifted by the UTC offset.
 with lines as (
     select
-        cast(closed_at as date) as sale_date,
-        cast(extract(hour from closed_at) as integer) as hour_of_day,
+        sale_date,
+        cast(extract(hour from closed_at_local) as integer) as hour_of_day,
         square_order_id,
         net_sales_cents
     from {{ ref('fact_order_line') }}
-    where closed_at is not null
+    where sale_date is not null
 ),
 
 periods as (

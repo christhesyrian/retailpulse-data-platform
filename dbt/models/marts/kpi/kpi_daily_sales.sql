@@ -2,7 +2,7 @@
 -- as explicit 0 rows rather than gaps in the time series.
 with lines as (
     select
-        cast(closed_at as date) as sale_date,
+        sale_date,
         square_order_id,
         quantity,
         gross_sales_cents,

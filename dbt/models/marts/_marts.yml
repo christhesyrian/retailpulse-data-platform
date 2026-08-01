@@ -47,7 +47,11 @@ models:
           - unique
 
   - name: fact_order_line
-    description: One row per order line item.
+    description: >
+      One row per order line item. Publishes Square's raw UTC `closed_at`
+      alongside `closed_at_local` / `sale_date` in the location's own
+      timezone; every downstream mart reads the local ones rather than
+      re-deriving a date from UTC. See tests/assert_local_time_conversion.sql.
     columns:
       - name: order_line_key
         data_tests:
@@ -56,6 +60,12 @@ models:
       - name: square_order_id
         data_tests:
           - not_null
+      # sale_date deliberately carries NO not_null test: Square returns a
+      # small number of order lines with no closed_at at all (18 of 146,554
+      # here — orders that were never closed), and those are genuinely
+      # undated. The real invariant, asserted in
+      # tests/assert_local_time_conversion.sql, is that sale_date is null
+      # exactly when closed_at is.
       - name: location_key
         data_tests:
           - relationships:

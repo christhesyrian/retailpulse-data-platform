@@ -3,14 +3,14 @@
 -- equivalent window.
 with lines as (
     select
-        cast(f.closed_at as date) as sale_date,
+        f.sale_date,
         f.square_order_id,
         f.quantity,
         f.net_sales_cents,
         coalesce(i.category_name, 'Uncategorized') as category_name
     from {{ ref('fact_order_line') }} f
     left join {{ ref('dim_item') }} i on f.item_key = i.item_key
-    where f.closed_at is not null
+    where f.sale_date is not null
 ),
 
 periods as (

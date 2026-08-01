@@ -66,7 +66,7 @@ Models marked **period-aware** are built at `(period_label, key)` grain by joini
 | `kpi_daily_sales` | One row per calendar day | Left-joined from `dim_date`; zero-sales days appear as 0. Includes `net_sales_7d_avg_cents` (null until 7 days exist) |
 | `kpi_sales_by_category` | **Period-aware** — one row per (period, category) | Net sales, units, share of the period total, and change vs. the prior window |
 | `kpi_sales_by_weekday` | **Period-aware** — one row per (period, ISO weekday 1–7) | Net sales, orders, AOV |
-| `kpi_sales_by_hour` | **Period-aware** — one row per (period, hour 0–23 UTC) | Net sales, orders |
+| `kpi_sales_by_hour` | **Period-aware** — one row per (period, hour 0–23, store-local) | Net sales, orders |
 | `kpi_payment_methods` | **Period-aware** — one row per (period, tender type) | Amount collected, processing fees, share of the period total |
 | `rpt_order_payment_reconciliation` | One row per order id | Order total vs. paid, `variance_cents`, `reconciliation_status` |
 | `kpi_item_sales` | **Period-aware** — one row per (period, item variation) | `units`, `orders`, `net_sales_cents`, `avg_weekly_units`, `prior_units`, `units_change_pct`, `net_sales_change_pct`, `units_all_time`, first/last sold |
@@ -81,5 +81,5 @@ Models marked **period-aware** are built at `(period_label, key)` grain by joini
 - Money is stored as integer cents until the presentation layer, matching Square's own representation.
 - **Net sales = gross − discount, EXCLUDING tax.** Tax is a separate column; the tax-inclusive amount collected is `net_sales_cents + tax_cents`, which is what the payment reconciliation checks against `fact_payment.amount_cents`.
 - All Square-issued IDs (`square_order_id`, `square_payment_id`, `square_catalog_object_id`, `square_location_id`) are preserved for lineage and deduplication.
-- Timestamps are UTC.
+- Raw timestamps (`closed_at`, `created_at`) are kept exactly as Square records them: naive UTC. `fact_order_line` and `fact_payment` additionally publish `closed_at_local` / `created_at_local` and a `sale_date` / `pay_date` in the location's own timezone, and **every mart reads those** rather than re-deriving from UTC. Attributing a 9pm sale to the next UTC day distorted daily, weekday and hour-of-day figures without changing any total.
 - Net sales / revenue fields are never labeled or described as profit — profit requires vendor cost data, which is out of scope until M5.

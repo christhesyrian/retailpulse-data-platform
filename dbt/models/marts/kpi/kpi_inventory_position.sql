@@ -9,7 +9,7 @@ with velocity as (
         catalog_object_id,
         sum(quantity) as units_sold_30d
     from {{ ref('fact_order_line') }}
-    where closed_at >= (current_date - interval 30 day)
+    where sale_date >= (current_date - interval 30 day)
     group by catalog_object_id
 ),
 

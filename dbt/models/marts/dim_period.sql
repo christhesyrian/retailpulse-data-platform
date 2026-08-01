@@ -23,10 +23,10 @@
 --    when this flag is false rather than publishing a number that looks real.
 with anchor as (
     select
-        coalesce(min(cast(closed_at as date)), current_date) as first_sale_date,
-        coalesce(max(cast(closed_at as date)), current_date) as as_of_date
+        coalesce(min(sale_date), current_date) as first_sale_date,
+        coalesce(max(sale_date), current_date) as as_of_date
     from {{ ref('fact_order_line') }}
-    where closed_at is not null
+    where sale_date is not null
 ),
 
 defs as (

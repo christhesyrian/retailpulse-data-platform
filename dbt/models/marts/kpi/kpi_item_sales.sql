@@ -10,7 +10,7 @@
 -- own window — that is deliberate, it answers "when did this last move?".
 with lines as (
     select
-        cast(f.closed_at as date) as sale_date,
+        f.sale_date,
         -- custom (non-catalog) line items key on their typed name; see
         -- kpi_item_weekly_sales for the rationale.
         coalesce(f.catalog_object_id, 'custom:' || coalesce(f.item_name, 'unknown'))
@@ -21,7 +21,7 @@ with lines as (
         f.quantity,
         f.net_sales_cents
     from {{ ref('fact_order_line') }} f
-    where f.closed_at is not null
+    where f.sale_date is not null
 ),
 
 periods as (

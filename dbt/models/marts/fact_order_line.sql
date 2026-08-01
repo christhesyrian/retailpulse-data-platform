@@ -3,7 +3,7 @@ with order_lines as (
 ),
 
 locations as (
-    select location_key, square_location_id from {{ ref('dim_location') }}
+    select location_key, square_location_id, timezone from {{ ref('dim_location') }}
 ),
 
 items as (
@@ -20,7 +20,33 @@ select
     order_lines.variation_name,
     locations.location_key,
     items.item_key,
+    -- closed_at is kept exactly as Square recorded it: a naive timestamp
+    -- holding UTC. It stays for lineage and for anyone reconciling against
+    -- Square's own API responses.
     order_lines.closed_at,
+    -- ...and is converted to the store's wall clock ONCE, here, using the
+    -- timezone Square reports for the location. Every downstream model reads
+    -- sale_date / closed_at_local instead of re-deriving from UTC.
+    --
+    -- This matters more than it looks for a liquor store: a 9pm sale is 04:00
+    -- the NEXT day in UTC, so deriving dates from UTC pushed a large slice of
+    -- every evening's trade onto the following day — and onto the following
+    -- weekday. It also put the "when you sell" peak at 22:00–06:00, which is
+    -- nobody's trading pattern.
+    --
+    -- The inner timezone() reads the naive timestamp as UTC and yields an
+    -- instant; the outer one renders that instant as wall-clock time in the
+    -- store's zone. It is DST-correct, so the offset is -7 in July and -8 in
+    -- January rather than a fixed shift. Locations with no timezone on file
+    -- fall back to UTC, which is the old behaviour rather than a wrong one.
+    timezone(
+        coalesce(locations.timezone, 'UTC'), timezone('UTC', order_lines.closed_at)
+    ) as closed_at_local,
+    cast(
+        timezone(
+            coalesce(locations.timezone, 'UTC'), timezone('UTC', order_lines.closed_at)
+        ) as date
+    ) as sale_date,
     order_lines.quantity,
     order_lines.gross_sales_cents,
     order_lines.discount_cents,

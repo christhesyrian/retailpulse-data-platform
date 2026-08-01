@@ -9,7 +9,7 @@
 -- columns come out null.
 with lines as (
     select
-        cast(closed_at as date) as sale_date,
+        sale_date,
         order_line_key,
         square_order_id,
         quantity,
@@ -18,12 +18,12 @@ with lines as (
         tax_cents,
         net_sales_cents
     from {{ ref('fact_order_line') }}
-    where closed_at is not null
+    where sale_date is not null
 ),
 
 payments as (
     select
-        cast(created_at as date) as pay_date,
+        pay_date,
         amount_cents,
         processing_fee_cents
     from {{ ref('fact_payment') }}

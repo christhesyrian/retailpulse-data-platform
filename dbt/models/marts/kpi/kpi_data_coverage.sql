@@ -10,20 +10,20 @@
 -- value above 1 usually means the extract hasn't been re-run today.
 with lines as (
     select
-        cast(closed_at as date) as sale_date,
-        closed_at,
+        sale_date,
+        closed_at_local,
         square_order_id,
         -- same item key as the rest of the item KPIs: custom (non-catalog)
         -- register items fall back to their typed name.
         coalesce(catalog_object_id, 'custom:' || coalesce(item_name, 'unknown')) as variation_id
     from {{ ref('fact_order_line') }}
-    where closed_at is not null
+    where sale_date is not null
 )
 
 select
     min(sale_date) as first_sale_date,
     max(sale_date) as last_sale_date,
-    max(closed_at) as last_order_at,
+    max(closed_at_local) as last_order_at,
     date_diff('day', min(sale_date), max(sale_date)) + 1 as days_covered,
     count(distinct sale_date) as days_with_sales,
     count(distinct date_trunc('week', sale_date)) as weeks_covered,
@@ -37,8 +37,9 @@ select
     end) as complete_weeks_covered,
     count(distinct square_order_id) as orders,
     count(distinct variation_id) as items_sold,
-    -- Sale dates come from closed_at in UTC, so an evening sale in a US store
-    -- lands on tomorrow's UTC date and the raw difference can go negative.
-    -- Clamp at 0: "sold today or later" is simply fresh.
+    -- Dates are the store's own calendar days now, so this no longer goes
+    -- negative from the UTC offset. The clamp stays because current_date is
+    -- the machine's date, which can still sit a day behind a store trading
+    -- east of it.
     greatest(0, date_diff('day', max(sale_date), current_date)) as days_since_last_sale
 from lines

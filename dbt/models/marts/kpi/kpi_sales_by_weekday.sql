@@ -3,11 +3,11 @@
 -- window the dashboard is showing.
 with lines as (
     select
-        cast(closed_at as date) as sale_date,
+        sale_date,
         square_order_id,
         net_sales_cents
     from {{ ref('fact_order_line') }}
-    where closed_at is not null
+    where sale_date is not null
 ),
 
 periods as (

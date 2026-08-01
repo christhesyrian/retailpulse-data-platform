@@ -10,7 +10,7 @@
 -- under differently-typed names, which double-counts it in anything that
 -- indexes the series by position (the forecast did exactly that).
 select
-    date_trunc('week', closed_at)::date as week_start,
+    date_trunc('week', sale_date)::date as week_start,
     coalesce(catalog_object_id, 'custom:' || coalesce(item_name, 'unknown')) as variation_id,
     max(item_name) as item_name,
     max(variation_name) as variation_name,
@@ -18,6 +18,6 @@ select
     sum(quantity) as units_sold,
     sum(net_sales_cents) as net_sales_cents
 from {{ ref('fact_order_line') }}
-where closed_at is not null
+where sale_date is not null
 group by 1, 2
 order by week_start, item_name

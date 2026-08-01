@@ -2,7 +2,7 @@
 -- collected by each, and the Square processing fees attributable to it.
 with payments as (
     select
-        cast(created_at as date) as pay_date,
+        pay_date,
         source_type,
         amount_cents,
         processing_fee_cents

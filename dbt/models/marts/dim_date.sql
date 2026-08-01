@@ -3,8 +3,8 @@
 -- for honest daily time-series -- a gap day should read as 0, not vanish).
 with bounds as (
     select
-        coalesce(min(cast(closed_at as date)), current_date) as min_date,
-        coalesce(max(cast(closed_at as date)), current_date) as max_date
+        coalesce(min(sale_date), current_date) as min_date,
+        coalesce(max(sale_date), current_date) as max_date
     from {{ ref('fact_order_line') }}
 ),
 
