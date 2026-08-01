@@ -6,9 +6,9 @@ from retailpulse.storage import write_raw_page
 from retailpulse.transform.silver import (
     build_silver_catalog_items,
     build_silver_inventory,
+    build_silver_locations,
     build_silver_order_lines,
     build_silver_payments,
-    build_silver_locations,
     run_silver_transform,
     write_silver_parquet,
 )

@@ -19,7 +19,10 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0,<9.0",
-  "ruff>=0.5,<1.0",
+  # Pinned exactly, not ranged. A range meant CI resolved a newer ruff than
+  # the local venv, so `ruff check .` passed locally and failed in CI on
+  # rules the local version didn't have. Bump this deliberately.
+  "ruff==0.16.1",
   "dbt-core>=1.10,<2.0",
   "dbt-duckdb>=1.10,<2.0",
 ]
@@ -37,6 +40,21 @@ where = ["src"]
 
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.lint]
+# Declared explicitly rather than relying on ruff's defaults, which shift
+# between releases — that drift is what turned CI red while local lint was
+# green. E/F are the long-standing set this project was already held to; I
+# (import sorting) is added because it's deterministic and auto-fixable.
+# Widening this is a deliberate, separate change: `ruff check . --statistics`
+# shows what each additional rule set would flag.
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.lint.isort]
+# `design` is a sibling module of dashboard/app.py, not a PyPI package.
+# Without this, isort files it under third-party next to pandas, which reads
+# as though it were an external dependency.
+known-first-party = ["retailpulse", "design"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
