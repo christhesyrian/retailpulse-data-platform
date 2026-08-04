@@ -7,7 +7,13 @@ name = "retailpulse"
 version = "0.1.0"
 description = "Production-style retail data platform built from Square commerce data."
 readme = "README.md"
-requires-python = ">=3.11"
+# The upper bound is real, not defensive. `dagster-dbt` publishes no wheel
+# that installs on 3.14: the only 3.14-compatible builds pin `dagster==1.12.7/8`,
+# which themselves cap at <3.14, so pip silently backtracks to a 2023-era
+# dagster and drags dbt-core down to 1.7.x with it. Declaring the ceiling turns
+# that silent, destructive resolution into an install-time error. 3.11 is also
+# what CI runs, so local and CI resolve the same tree.
+requires-python = ">=3.11,<3.14"
 dependencies = [
   "httpx>=0.27,<1.0",
   "python-dotenv>=1.0,<2.0",
@@ -30,6 +36,21 @@ dev = [
 # pipeline) doesn't need to install Streamlit and its UI dependency tree.
 dashboard = [
   "streamlit>=1.40,<2.0",
+]
+# Orchestration. Both pins are exact and must be bumped together: dagster-dbt
+# 0.X.N depends on `dagster==1.(X-16).N`, so a ranged pin on either one lets pip
+# resolve a mismatched pair and then backtrack years to satisfy it. The mapping
+# for this pair is dagster-dbt 0.29.16 <-> dagster 1.13.16.
+#
+# dagster-dbt also constrains dbt-core to <1.12, which is why the resolved
+# dbt-core is 1.11.x rather than the 1.12.0 a bare `[dev]` install would pick.
+# CI installs `[dev,orchestration]` for exactly this reason — installing only
+# `[dev]` there would test the pipeline against a different dbt than the one
+# the orchestrator actually runs.
+orchestration = [
+  "dagster==1.13.16",
+  "dagster-dbt==0.29.16",
+  "dagster-webserver==1.13.16",
 ]
 
 [project.scripts]

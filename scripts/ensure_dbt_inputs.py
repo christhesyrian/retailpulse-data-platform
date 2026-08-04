@@ -1,18 +1,10 @@
 #!/usr/bin/env python3
 """Create the optional operator-maintained input files dbt expects.
 
-`vendor_costs.csv` and `category_overrides.csv` are both optional features:
-a store with no vendor costs still gets sales KPIs, and a store that needs no
-category renaming still gets a clean catalog. But the staging models read them
-unconditionally, so the files have to *exist* — an empty file with just a
-header is what "I have none of these" looks like to dbt.
-
-This lives in one place because it was previously inlined in the Makefile
-only. CI runs `dbt build` directly rather than through make, so it never
-created them, and the build failed on a missing file the moment anything else
-stopped failing first. Both callers now run this.
-
-Existing files are never touched, so real vendor costs survive a rebuild.
+Thin CLI wrapper. The logic lives in `retailpulse.reference_inputs` so that
+`make dbt-build`, the CI workflow and the Dagster `reference_inputs` asset all
+create these files the same way — an earlier version existed only in the
+Makefile, so CI (which runs `dbt build` directly) never created them.
 """
 
 from __future__ import annotations
@@ -21,31 +13,18 @@ import os
 import sys
 from pathlib import Path
 
-# (relative path, header row) — the header is the contract the staging model
-# reads, so it has to match stg_vendor_costs.sql / stg_category_overrides.sql.
-INPUTS: list[tuple[str, str]] = [
-    ("vendor_costs.csv", "variation_id,item_name,category_name,vendor_name,unit_cost_cents"),
-    ("category_overrides.csv", "raw_category,canonical_category"),
-]
+from retailpulse.reference_inputs import ensure_reference_inputs
 
 
 def main() -> int:
-    input_dir = Path(os.environ.get("RETAILPULSE_INPUT_DIR", "data/input"))
-    warehouse = Path(
-        os.environ.get("RETAILPULSE_WAREHOUSE_PATH", "data/gold/warehouse.duckdb")
+    outcomes = ensure_reference_inputs(
+        input_dir=Path(os.environ.get("RETAILPULSE_INPUT_DIR", "data/input")),
+        warehouse_path=Path(
+            os.environ.get("RETAILPULSE_WAREHOUSE_PATH", "data/gold/warehouse.duckdb")
+        ),
     )
-
-    input_dir.mkdir(parents=True, exist_ok=True)
-    warehouse.parent.mkdir(parents=True, exist_ok=True)
-
-    for name, header in INPUTS:
-        path = input_dir / name
-        if path.exists():
-            print(f"  kept: {path} ({path.stat().st_size} bytes)")
-            continue
-        path.write_text(header + "\n", encoding="utf-8")
-        print(f"  created empty: {path}")
-
+    for name, outcome in outcomes.items():
+        print(f"  {outcome}: {name}")
     return 0
 
 

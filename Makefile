@@ -1,4 +1,4 @@
-.PHONY: install check doctor extract-sandbox seed-sandbox silver dbt-build dbt-docs demo-data dashboard test lint security-check
+.PHONY: install check doctor extract-sandbox seed-sandbox silver dbt-build dbt-docs demo-data dashboard test lint security-check dagster dagster-validate
 
 # Local, credential-free dbt env: DuckDB is a file on disk, not a server.
 DBT_ENV = RETAILPULSE_SILVER_DIR=$(CURDIR)/data/silver RETAILPULSE_INPUT_DIR=$(CURDIR)/data/input RETAILPULSE_WAREHOUSE_PATH=$(CURDIR)/data/gold/warehouse.duckdb
@@ -40,6 +40,19 @@ demo-data:
 
 dashboard:
 	. .venv/bin/activate && $(DBT_ENV) streamlit run dashboard/app.py
+
+# Dagster's UI at localhost:3000: asset graph, run history, backfills.
+# DAGSTER_HOME must be absolute and must exist, or Dagster falls back to a
+# temporary instance and silently forgets every run when the process exits.
+dagster:
+	mkdir -p $(CURDIR)/dagster_home
+	. .venv/bin/activate && $(DBT_ENV) DAGSTER_HOME=$(CURDIR)/dagster_home \
+		dagster dev -m retailpulse.orchestration.definitions
+
+# Loads the whole asset graph without running anything — the same check CI does.
+dagster-validate:
+	. .venv/bin/activate && $(DBT_ENV) dbt parse --project-dir dbt --profiles-dir dbt
+	. .venv/bin/activate && $(DBT_ENV) dagster definitions validate -m retailpulse.orchestration.definitions
 
 test:
 	. .venv/bin/activate && pytest -q

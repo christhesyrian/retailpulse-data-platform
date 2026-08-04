@@ -24,3 +24,7 @@ dbt/dbt_packages/
 dbt/.user.yml
 *.duckdb
 *.duckdb.wal
+# Dagster run/event storage. `dagster dev` writes here; the CLI commands that
+# don't have DAGSTER_HOME set scatter .tmp_dagster_home_* dirs in the cwd.
+dagster_home/
+.tmp_dagster_home_*/

@@ -11,6 +11,26 @@ def utc_window(days: int) -> tuple[str, str]:
     return start.isoformat().replace("+00:00", "Z"), end.isoformat().replace("+00:00", "Z")
 
 
+def _active_location_ids(payload: dict) -> list[str]:
+    return [
+        location["id"]
+        for location in payload.get("locations", [])
+        if location.get("status") == "ACTIVE"
+    ]
+
+
+def list_active_location_ids(client: SquareClient) -> list[str]:
+    """Active location ids only, without writing a Bronze page.
+
+    For callers that need locations purely to scope another request. The
+    orchestrator's per-day order extraction is the motivating case: it needs
+    the ids for every partition, and a 365-day backfill that wrote one
+    redundant locations snapshot per partition would add 365 files to Bronze
+    that say the same thing.
+    """
+    return _active_location_ids(client.list_locations())
+
+
 def extract_locations(
     client: SquareClient, raw_root: Path, run_id: str, environment: str
 ) -> list[str]:
@@ -19,11 +39,7 @@ def extract_locations(
         raw_root, "square", "locations", payload, page_number=1, run_id=run_id,
         environment=environment,
     )
-    return [
-        location["id"]
-        for location in payload.get("locations", [])
-        if location.get("status") == "ACTIVE"
-    ]
+    return _active_location_ids(payload)
 
 
 def extract_orders(

@@ -35,6 +35,17 @@ flowchart LR
     K --> F[Streamlit dashboard]
 ```
 
+The whole pipeline runs as a **Dagster asset graph** — 42 assets, two scheduled
+jobs, and two asset checks — with the dbt project loaded via `dagster-dbt` so all
+30 models appear as individual assets with real lineage rather than one opaque
+"run dbt" step. Orders and payments are partitioned by **store-local day**, so a
+single day is the unit of both scheduling and backfill. See
+[`docs/orchestration.md`](docs/orchestration.md).
+
+```bash
+make dagster   # asset graph, run history and backfills at localhost:3000
+```
+
 | Layer | Status | Description |
 |---|---|---|
 | Square APIs | Implemented (read-only) | Locations, Catalog, Orders, Payments, Inventory |
@@ -44,6 +55,7 @@ flowchart LR
 | Gold Fact/Dimension Models | Implemented | `dbt-duckdb` models in `dbt/`, matching `sql/warehouse_schema.sql`'s target grain |
 | KPI + margin + inventory | Implemented | Tested `kpi_*` models; payment reconciliation; gross-margin & inventory-position |
 | Dashboard | Implemented | Streamlit app reading the tested KPI models |
+| Orchestration | Implemented | Dagster asset graph: daily-partitioned ingest, retry policy, freshness + shape asset checks, two schedules |
 | Forecasting | **Not implemented** — future work | Demand forecasting, reorder recommendations |
 
 ## Current focus: item-level sales analytics and forecasting
@@ -81,7 +93,7 @@ M5 added inventory and gross-margin analysis, but both are **optional** and only
 
 ## Technologies
 
-Python 3.11+, [httpx](https://www.python-httpx.org/) (HTTP client with retry/backoff), [pydantic](https://docs.pydantic.dev/) + [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) (typed, secret-aware configuration), [DuckDB](https://duckdb.org/) (embedded OLAP engine + Parquet I/O), [dbt-duckdb](https://github.com/duckdb/dbt-duckdb) (SQL transformation + testing), [Streamlit](https://streamlit.io/) (KPI dashboard), pytest + ruff (tests/lint), Square REST API `2026-07-15`.
+Python 3.11 (the `<3.14` ceiling is enforced in `pyproject.toml` — see [`docs/orchestration.md`](docs/orchestration.md)), [httpx](https://www.python-httpx.org/) (HTTP client with retry/backoff), [pydantic](https://docs.pydantic.dev/) + [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) (typed, secret-aware configuration), [DuckDB](https://duckdb.org/) (embedded OLAP engine + Parquet I/O), [dbt-duckdb](https://github.com/duckdb/dbt-duckdb) (SQL transformation + testing), [Dagster](https://dagster.io/) + [dagster-dbt](https://docs.dagster.io/integrations/dbt) (asset-based orchestration, partitions, backfills, asset checks), [Streamlit](https://streamlit.io/) (KPI dashboard), pytest + ruff (tests/lint), Square REST API `2026-07-15`.
 
 ## Data privacy strategy
 
@@ -137,6 +149,18 @@ make dashboard    # opens the Streamlit dashboard at http://localhost:8501
 
 `make demo-data` generates a deterministic ~6 weeks of fake orders/payments/inventory **and** synthetic vendor costs (clearly labeled synthetic — no real data), so the dashboard has margins and inventory to show. To run it against your own Square Sandbox data instead, use `make extract-sandbox && make silver && make dbt-build` before `make dashboard`.
 
+### Orchestration
+
+```bash
+make dagster           # asset graph, run history, backfills at http://localhost:3000
+make dagster-validate  # load every asset, check, job and schedule without running them
+```
+
+The UI is where the pipeline is easiest to read: the Bronze → Silver → dbt
+lineage, which partitions have been filled, and the two asset checks. Backfilling
+a range of store-days is a selection in the `square_orders` asset rather than a
+script. Full detail in [`docs/orchestration.md`](docs/orchestration.md).
+
 ### Vendor costs (for gross-margin analysis)
 
 Vendor/acquisition costs are **not** in Square — they're an operator-maintained input at `data/input/vendor_costs.csv` (Git-ignored; real cost data is never committed). Generate a synthetic one, or a fill-in template from your real catalog:
@@ -161,11 +185,14 @@ Edit `unit_cost_cents` / `vendor_name` with your real figures, then `make dbt-bu
 - [x] **Period-aware KPI layer** (`dim_period`) — every headline model built at (period, key) grain with prior-window comparisons, and comparisons suppressed where history doesn't support them
 - [x] Optional gross margin (from operator-maintained vendor costs) — gracefully empty when that data doesn't exist, so a build never fails without it
 - [x] Streamlit dashboard sourced entirely from the tested KPI models; margin section hidden when its data is absent
-- [x] Local `make security-check` and full-pipeline CI (synthetic data → Silver → dbt build → dashboard smoke test) with zero credentials
+- [x] Local `make security-check` and full-pipeline CI (synthetic data → Silver → dbt build → dashboard smoke test → Dagster definitions validation) with zero credentials
+- [x] **Dagster orchestration** — 42 assets end to end, daily-partitioned ingest on the store's calendar (DST-correct), exponential-backoff retries on the rate-limited Square API, two schedules, and asset checks for warehouse freshness and timezone regressions
 
 ## What's next
 
-- M6: Orchestration, observability, and cloud deployment
+- M6: Deployment — public demo on synthetic data, plus a Dockerfile for the real pipeline
+- Schema contracts at the Bronze→Silver boundary (Pydantic validation, dbt `contract: enforced`, source freshness)
+- Incremental `fact_order_line` with a lookback window for late-arriving order edits
 - M7: Webhook-driven incremental ingestion
 - M8/M9: Demand forecasting and reorder recommendations
 
