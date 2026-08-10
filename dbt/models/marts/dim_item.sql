@@ -24,6 +24,14 @@ select
     coalesce(o.canonical_category, {{ normalize_category('items.category_name') }})
         as category_name,
     items.category_name as category_name_raw,
+    -- Lottery and scratchers are always the top sellers by units, because the
+    -- customer picks the store rather than the product and volume follows the
+    -- jackpot. Ranking them alongside merchandise buries every item the owner
+    -- could actually act on. The flag lives here, driven by the
+    -- `lottery_categories` var, so "what counts as lottery" is one tested
+    -- definition rather than a filter re-typed in each place that needs it.
+    coalesce(o.canonical_category, {{ normalize_category('items.category_name') }})
+        in ({{ "'" ~ var('lottery_categories') | join("', '") ~ "'" }}) as is_lottery,
     items.sku,
     items.price_cents as price_amount_cents,
     items.currency,

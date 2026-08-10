@@ -19,66 +19,21 @@ headless = true
 gatherUsageStats = false
 
 [theme]
-# `base` is deliberately unset. Both [theme.light] and [theme.dark] are fully
-# specified below, so leaving the default alone lets the dashboard follow the
-# viewer's own light/dark setting instead of forcing one on them. The dark
-# palette is a selected set of steps for the dark surface, not an inverted
-# copy of the light one.
+# Light, for everyone. The validated light palette is declared inline here
+# rather than under [theme.light], and there is deliberately no [theme.dark]
+# section: Streamlit switches to [theme.dark] whenever that section exists,
+# following the viewer's OS setting, which makes `base` alone a no-op. Removing
+# it is what actually pins the appearance.
+#
+# The dashboard used to follow the OS, so anyone with a dark desktop met a
+# near-black page with saturated blue. Legible — the dark palette passed the
+# same six validator checks — but it reads as a terminal rather than as a book
+# of accounts, and this is a tool for reading a shop's takings.
+#
+# The dark palette is not lost: DARK still lives in dashboard/design.py, and
+# restoring OS-following is re-adding a [theme.dark] block with those values.
+base = "light"
 
-# System sans everywhere, including the big numbers — no display face.
-font = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
-headingFont = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
-codeFont = "ui-monospace, SFMono-Regular, Menlo, monospace"
-baseFontSize = 15
-
-# Type scale for h1..h6. The page never uses h1 — the app header is its own
-# component — so the scale starts at the section-heading sizes.
-headingFontSizes = ["1.5rem", "1.125rem", "1rem", "0.9375rem", "0.875rem", "0.8125rem"]
-headingFontWeights = [600, 600, 600, 600, 600, 600]
-
-# Softly rounded, not pill-shaped: a data tool, not a marketing page.
-baseRadius = "0.5rem"
-buttonRadius = "0.5rem"
-showWidgetBorder = true
-showSidebarBorder = true
-
-# Sized so the widest realistic figure fits without an ellipsis. Money is
-# shown to the cent, and a year of trade puts "$1,410,710.24" — 13 characters
-# — in a quarter-width tile; at 2rem that truncated. Raise this only after
-# checking the longest value the 365-day view actually renders.
-metricValueFontSize = "1.75rem"
-metricValueFontWeight = 600
-
-[theme.dark]
-backgroundColor = "#0d0d0d"          # page plane
-secondaryBackgroundColor = "#1a1a19" # card / chart surface
-textColor = "#f4f4f1"
-primaryColor = "#3987e5"             # categorical slot 1, dark step
-borderColor = "#2c2c2a"              # hairline, one step off surface
-dataframeBorderColor = "#2c2c2a"
-dataframeHeaderBackgroundColor = "#141413"
-linkColor = "#3987e5"
-codeBackgroundColor = "#141413"
-greenColor = "#0ca30c"               # status: good
-redColor = "#d03b3b"                 # status: critical
-yellowColor = "#fab219"              # status: warning
-orangeColor = "#d95926"              # categorical slot 2, dark step
-chartCategoricalColors = [
-  "#3987e5", "#d95926", "#199e70", "#c98500",
-  "#d55181", "#008300", "#9085e9", "#e66767",
-]
-chartSequentialColors = [
-  "#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#6da7ec",
-  "#5598e7", "#3987e5", "#2a78d6", "#256abf", "#1c5cab",
-]
-
-[theme.dark.sidebar]
-backgroundColor = "#141413"
-secondaryBackgroundColor = "#1a1a19"
-borderColor = "#2c2c2a"
-textColor = "#f4f4f1"
-
-[theme.light]
 backgroundColor = "#f9f9f7"          # page plane
 secondaryBackgroundColor = "#fcfcfb" # card / chart surface
 textColor = "#0b0b0b"
@@ -101,7 +56,31 @@ chartSequentialColors = [
   "#5598e7", "#3987e5", "#2a78d6", "#256abf", "#1c5cab",
 ]
 
-[theme.light.sidebar]
+# System sans everywhere, including the big numbers — no display face.
+font = "'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+headingFont = "'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+codeFont = "'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace"
+baseFontSize = 15
+
+# Type scale for h1..h6. The page never uses h1 — the app header is its own
+# component — so the scale starts at the section-heading sizes.
+headingFontSizes = ["1.5rem", "1.125rem", "1rem", "0.9375rem", "0.875rem", "0.8125rem"]
+headingFontWeights = [600, 600, 600, 600, 600, 600]
+
+# Softly rounded, not pill-shaped: a data tool, not a marketing page.
+baseRadius = "0.5rem"
+buttonRadius = "0.5rem"
+showWidgetBorder = true
+showSidebarBorder = true
+
+# Sized so the widest realistic figure fits without an ellipsis. Money is
+# shown to the cent, and a year of trade puts "$1,410,710.24" — 13 characters
+# — in a quarter-width tile; at 2rem that truncated. Raise this only after
+# checking the longest value the 365-day view actually renders.
+metricValueFontSize = "1.75rem"
+metricValueFontWeight = 600
+
+[theme.sidebar]
 backgroundColor = "#f0efec"
 secondaryBackgroundColor = "#fcfcfb"
 borderColor = "#e1e0d9"

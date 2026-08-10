@@ -6,6 +6,15 @@ profile: retailpulse
 model-paths: ["models"]
 clean-targets: ["target", "dbt_packages"]
 
+# Categories whose sales are structurally different from merchandise: the
+# customer chooses the store, not the product, and volume tracks jackpots
+# rather than anything the owner controls. They are always the top sellers, so
+# leaving them in a "best sellers" list crowds out every item a buying decision
+# could actually be made about. Flagged, never dropped — they are real revenue
+# and get their own view.
+vars:
+  lottery_categories: ["SCRATCHER", "LOTTO"]
+
 models:
   retailpulse:
     staging:

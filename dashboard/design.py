@@ -80,7 +80,22 @@ LIGHT = Palette(
     warning="#fab219",
 )
 
-FONT = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+# IBM Plex Sans rather than the system stack. Two reasons beyond taste: its
+# figures are genuinely tabular, which matters on a page that is almost entirely
+# numbers in columns, and it holds up at the 11px axis-label sizes the charts
+# use where a system UI font goes muddy. The fallbacks are the previous stack,
+# so an offline load degrades to exactly what this looked like before.
+FONT = "'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+
+# Reserved for the wordmark alone. A serif in one deliberate place reads as
+# brand; a serif in the section headings of a dense dashboard reads as a
+# scanability problem.
+DISPLAY_FONT = "'Instrument Serif', Georgia, 'Times New Roman', serif"
+
+FONT_IMPORT = (
+    "@import url('https://fonts.googleapis.com/css2?"
+    "family=IBM+Plex+Sans:wght@400;500;600;700&family=Instrument+Serif&display=swap');"
+)
 
 # Mark specs, from the data-viz reference. Named here so no chart restates them.
 BAR_MAX_WIDTH = 24
@@ -90,17 +105,39 @@ CORNER_RADIUS = 4
 AREA_OPACITY = 0.10
 
 
-def palette() -> Palette:
-    """The palette for the viewer's current theme.
+def _is_light(hex_color: str) -> bool:
+    """Rough relative luminance of a #rrggbb string."""
+    value = hex_color.lstrip("#")
+    r, g, b = (int(value[i : i + 2], 16) / 255 for i in (0, 2, 4))
+    return (0.2126 * r + 0.7152 * g + 0.0722 * b) > 0.5
 
-    st.context.theme.type follows the viewer's own light/dark toggle, so the
-    charts track the chrome instead of being pinned to whatever the config
-    file defaults to.
+
+def palette() -> Palette:
+    """The palette matching the chrome Streamlit actually rendered.
+
+    Derived from the resolved `theme.backgroundColor` rather than from
+    `st.context.theme.type`. That property reports the viewer's OS preference,
+    which is only the same thing as the app's appearance while the config
+    defines both a light and a dark theme. It no longer does — config.toml pins
+    the app to light — so on a dark desktop the two disagreed: the page
+    rendered light while the charts and every CSS rule here were handed the
+    dark palette. Dark cards on a white page, and a title that vanished into
+    its own background.
+
+    Reading the background colour keeps the rule the design system is built on:
+    config.toml styles the widgets, this file styles the charts, and they agree
+    because they are both looking at the same value.
     """
+    try:
+        background = st.get_option("theme.backgroundColor")
+        if background:
+            return LIGHT if _is_light(background) else DARK
+    except Exception:  # pragma: no cover - option unavailable
+        pass
     try:
         return LIGHT if st.context.theme.type == "light" else DARK
     except Exception:  # pragma: no cover - older Streamlit, or no context
-        return DARK
+        return LIGHT
 
 
 def register_chart_theme() -> None:
@@ -169,6 +206,9 @@ def _css(p: Palette) -> str:
     """The rules Streamlit's theming API can't reach."""
     return f"""
     <style>
+      /* Must be the first rule in this stylesheet or the browser drops it. */
+      {FONT_IMPORT}
+
       /* ---- page rhythm -------------------------------------------------- */
       /* Streamlit's default top padding assumes a page title; this app has a
          designed header instead, so the gap comes out. */
@@ -193,8 +233,9 @@ def _css(p: Palette) -> str:
       .rp-mark svg {{ display: block; }}
       .rp-titles {{ display: flex; flex-direction: column; gap: 1px; min-width: 0; }}
       .rp-title {{
-          font-size: 1.375rem; font-weight: 640; letter-spacing: -0.018em;
-          color: {p.ink}; line-height: 1.15;
+          font-family: {DISPLAY_FONT};
+          font-size: 1.75rem; font-weight: 400; letter-spacing: -0.005em;
+          color: {p.ink}; line-height: 1.05;
       }}
       .rp-subtitle {{
           font-size: 0.8125rem; color: {p.ink_muted}; line-height: 1.3;
@@ -243,6 +284,11 @@ def _css(p: Palette) -> str:
           color: {p.ink};
           letter-spacing: -0.025em;
           line-height: 1.1;
+          /* Lining tabular figures so a column of KPI cards has its digits on
+             the same vertical rhythm — proportional figures make $1,075.23 and
+             $107,913.80 look like different type sizes. */
+          font-variant-numeric: tabular-nums lining-nums;
+          font-feature-settings: 'tnum' 1, 'lnum' 1;
       }}
       [data-testid="stMetricDelta"] {{
           font-size: 0.8125rem !important;
@@ -279,10 +325,78 @@ def _css(p: Palette) -> str:
       /* ---- cards --------------------------------------------------------- */
       [data-testid="stVerticalBlockBorderWrapper"] {{ border-radius: 12px; }}
 
-      /* ---- period control ------------------------------------------------ */
+      /* ---- window control ------------------------------------------------ */
+      /* The one control that drives every number on the page, so it stays put
+         while the page scrolls: reaching for it used to mean scrolling back to
+         the top from the bottom of a long item table.
+
+         `.st-key-*` comes from `st.container(key=...)` and is a stable, public
+         hook — unlike the generated emotion class names this file otherwise
+         avoids. Sticky (not fixed) so it still participates in layout and
+         cannot overlap the header above it.
+
+         The negative margins and matching padding let the blurred background
+         bleed to the container's edges; without them the content scrolling
+         past would show through the gutters on either side. */
+      /* The sticky rules go on the *wrapper* Streamlit puts around a keyed
+         container, not on the container itself. A sticky box can only travel
+         within its containing block, and that wrapper hugs the bar exactly
+         (55px) — so styling the bar directly produces an element that is
+         `position: sticky` and still scrolls away, which looks like the
+         property silently not working. Promoting the wrapper gives it the full
+         height of the page's vertical block to stick inside. */
+      [data-testid="stLayoutWrapper"]:has(> .st-key-rp-window-bar) {{
+          position: sticky;
+          /* Clears Streamlit's own fixed toolbar. */
+          top: 3.25rem;
+          z-index: 100;
+          /* No horizontal bleed. Widening this to cover the block container's
+             padding does not work the way it looks like it should: the wrapper
+             is a flex item, so an explicit `width` is ignored in favour of the
+             stretch sizing, and a negative margin-left slides the bar without a
+             negative margin-right widening it — which left a strip of chart
+             visible past its right edge.
+             It also isn't needed. Every element on the page lives inside the
+             padded content box, so the gutters either side are empty; matching
+             the content width exactly covers everything there is to cover. */
+          margin: 0 0 0.25rem 0;
+          padding: 0.6rem 0 0.5rem 0;
+          border-bottom: 1px solid {p.grid};
+          /* Fully opaque. A translucent bar with a backdrop blur looked right
+             over flat areas and wrong over everything else: high-contrast bars
+             and the daily-sales line ghosted straight through it on scroll,
+             which reads as a rendering fault rather than as a design. There is
+             nothing to gain from seeing the chart you are scrolling past
+             through the control that filters it. */
+          background: {p.plane};
+          /* The seam the blur used to soften is now a shadow instead, which
+             does the same job without letting anything show through. */
+          box-shadow: 0 6px 16px -12px rgba(0, 0, 0, 0.5);
+      }}
+      /* Streamlit stacks a gap under every block; inside a bar this tight it
+         reads as a stray line of empty space. */
+      .st-key-rp-window-bar [data-testid="stHorizontalBlock"] {{ gap: 0.75rem; }}
+      .st-key-rp-window-bar [data-testid="stElementContainer"] {{ margin-bottom: 0; }}
+      .st-key-rp-window-bar [data-testid="stVerticalBlock"] {{ gap: 0.4rem; }}
+      /* The resolved-window caption is the bar's second line: it names what is
+         on screen, so it stays quiet but must not wrap into two lines. */
+      .st-key-rp-window-bar [data-testid="stCaptionContainer"] {{
+          font-size: 0.78125rem;
+          line-height: 1.2;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+      }}
+
       [data-testid="stButtonGroup"] button {{
           font-size: 0.8125rem !important;
           font-weight: 550 !important;
+      }}
+      /* The date range sits beside the presets and should read as the same
+         family of control, not as a form field that wandered in. */
+      .st-key-rp-window-bar [data-testid="stDateInput"] input {{
+          font-size: 0.8125rem;
+          font-weight: 550;
       }}
 
       /* ---- tables -------------------------------------------------------- */

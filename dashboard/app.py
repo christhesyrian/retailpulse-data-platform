@@ -27,6 +27,7 @@ Run with `make dashboard` (or `streamlit run dashboard/app.py`).
 from __future__ import annotations
 
 import os
+from datetime import date
 from pathlib import Path
 
 import altair as alt
@@ -45,7 +46,11 @@ DEFAULT_PERIOD = "Last 30 days"
 # One height scale for every chart, so nothing looks accidental.
 CHART_TALL = 290
 CHART_SHORT = 190
-TILE_HEIGHT = 186
+# Every KPI tile is now the compact height. The taller variant existed to hold
+# a spark line under the value; those were removed because an axis-less,
+# scale-less line can show a shape but cannot answer a question, and the same
+# trend is in "Sales by day" below with axes and a 7-day average to read it
+# against.
 TILE_COMPACT = 116
 
 # Item-table sort choices -> (column, ascending). Every column here is a
@@ -61,14 +66,40 @@ SORT_OPTIONS: dict[str, tuple[str, bool]] = {
 ROW_LIMITS = [25, 50, 100, 250, 1000, "All"]
 SPARKLINE_WEEKS = 12
 
+# Hour-of-day axis labels as a shopkeeper says them ("5p", not "17"). The Vega
+# expression and the Python helper must agree — they label the same axis and
+# its caption.
+HOUR_LABEL = (
+    "datum.value == 0 ? '12a' : datum.value < 12 ? datum.value + 'a'"
+    " : datum.value == 12 ? '12p' : (datum.value - 12) + 'p'"
+)
+
+
+def _hour_label(hour: int) -> str:
+    if hour == 0:
+        return "12am"
+    if hour < 12:
+        return f"{hour}am"
+    if hour == 12:
+        return "12pm"
+    return f"{hour - 12}pm"
+
+
+# Most date labels a time axis may show before ticks start being skipped.
+MAX_DATE_LABELS = 14
+
 
 @st.cache_data(ttl=60)
-def query(sql: str) -> pd.DataFrame:
+def query(sql: str, params: tuple = ()) -> pd.DataFrame:
     # Open a short-lived read-only connection per query so the dashboard
     # never holds a lock on the warehouse file (dbt can rebuild freely).
+    #
+    # Window bounds are bound as parameters rather than formatted into the SQL.
+    # They come from a date picker so they are already dates, but a query
+    # string that is assembled by hand is a habit worth not having.
     con = duckdb.connect(str(WAREHOUSE_PATH), read_only=True)
     try:
-        return con.execute(sql).df()
+        return con.execute(sql, params).df()
     finally:
         con.close()
 
@@ -129,11 +160,19 @@ def bar_width(n: int, span: int = 900) -> float:
     return min(design.BAR_MAX_WIDTH, max(2.0, (span / max(n, 1)) * 0.62))
 
 
-# --- data access (thin wrappers over the KPI models) -----------------------
+# --- data access (thin wrappers over the warehouse) ------------------------
 #
-# Each loader pulls every period at once and the page filters to the selected
-# one in pandas. The tables are small (the largest is ~14k rows), and it keeps
-# the SQL here to plain selects with no predicates of its own.
+# Everything windowed goes through the `rp_*_range` macros, which take the
+# selected start and end dates. That is one code path for both the presets and
+# an arbitrary range: a preset simply supplies the bounds `dim_period` already
+# publishes for it, rather than reading a different set of tables.
+#
+# The reason that is safe — and the reason the presets did not lose their
+# tested numbers when they started going through the macros — is the dbt test
+# `assert_range_macros_match_periods`, which fails the build if a macro and its
+# precomputed `kpi_*` model ever disagree on any of the five canonical windows.
+#
+# The dashboard still computes nothing. It chooses two dates.
 
 
 def load_periods() -> pd.DataFrame:
@@ -148,8 +187,8 @@ def load_coverage() -> pd.Series:
     return query("select * from main_marts.kpi_data_coverage").iloc[0]
 
 
-def load_summary() -> pd.DataFrame:
-    return query("select * from main_marts.kpi_summary order by period_order")
+def load_summary(start: date, end: date) -> pd.Series:
+    return query("select * from rp_summary_range(?, ?)", (start, end)).iloc[0]
 
 
 def load_daily() -> pd.DataFrame:
@@ -159,43 +198,72 @@ def load_daily() -> pd.DataFrame:
     )
 
 
-def load_categories() -> pd.DataFrame:
+def load_categories(start: date, end: date) -> pd.DataFrame:
     return query(
-        "select period_label, category_name, orders, units, net_sales_cents, pct_of_net_sales, "
-        "prior_net_sales_cents, net_sales_change_pct from main_marts.kpi_sales_by_category "
-        "order by period_order, net_sales_cents desc"
+        "select category_name, orders, units, net_sales_cents, pct_of_net_sales, "
+        "prior_net_sales_cents, net_sales_change_pct from rp_category_range(?, ?) "
+        "order by net_sales_cents desc",
+        (start, end),
     )
 
 
-def load_weekday() -> pd.DataFrame:
+def load_weekday(start: date, end: date) -> pd.DataFrame:
     return query(
-        "select period_label, day_of_week, day_name, orders, net_sales_cents "
-        "from main_marts.kpi_sales_by_weekday order by period_order, day_of_week"
+        "select day_of_week, day_name, orders, net_sales_cents "
+        "from rp_weekday_range(?, ?) order by day_of_week",
+        (start, end),
     )
 
 
-def load_hourly() -> pd.DataFrame:
+def load_hourly(start: date, end: date) -> pd.DataFrame:
     return query(
-        "select period_label, hour_of_day, orders, net_sales_cents "
-        "from main_marts.kpi_sales_by_hour order by period_order, hour_of_day"
+        "select hour_of_day, orders, net_sales_cents "
+        "from rp_hour_range(?, ?) order by hour_of_day",
+        (start, end),
     )
 
 
-def load_payments() -> pd.DataFrame:
+def load_popular_times(start: date, end: date) -> pd.DataFrame:
     return query(
-        "select period_label, source_type, payments, amount_collected_cents, "
-        "processing_fee_cents, pct_of_collected from main_marts.kpi_payment_methods "
-        "order by period_order, amount_collected_cents desc"
+        "select day_of_week, day_name, hour_of_day, days_observed, orders, "
+        "net_sales_cents, orders_per_day, busyness_pct from rp_popular_times_range(?, ?) "
+        "order by day_of_week, hour_of_day",
+        (start, end),
     )
 
 
-def load_items() -> pd.DataFrame:
+def load_revenue_forecast() -> pd.DataFrame:
     return query(
-        "select period_label, variation_id, item_name, variation_name, category_name, "
+        "select horizon_label, horizon_days, horizon_order, period_start, period_end, "
+        "forecast_net_sales_cents, forecast_daily_avg_cents, trend_factor, method, "
+        "wape_pct, baseline_wape_pct, mae_cents, backtest_days, points_better_than_baseline, "
+        "as_of_date from main_marts.kpi_revenue_forecast order by horizon_order"
+    )
+
+
+def load_revenue_forecast_daily() -> pd.DataFrame:
+    return query(
+        "select forecast_date, days_ahead, day_name, forecast_net_sales_cents, "
+        "weekday_avg_cents, trend_factor from main_marts.kpi_revenue_forecast_daily "
+        "order by days_ahead"
+    )
+
+
+def load_payments(start: date, end: date) -> pd.DataFrame:
+    return query(
+        "select source_type, payments, amount_collected_cents, processing_fee_cents, "
+        "pct_of_collected from rp_payments_range(?, ?) order by amount_collected_cents desc",
+        (start, end),
+    )
+
+
+def load_items(start: date, end: date) -> pd.DataFrame:
+    return query(
+        "select variation_id, item_name, variation_name, category_name, is_lottery, "
         "units, orders, net_sales_cents, avg_weekly_units, prior_units, "
         "prior_net_sales_cents, units_change_pct, net_sales_change_pct, units_all_time, "
-        "first_sold_at, last_sold_at from main_marts.kpi_item_sales "
-        "order by period_order, units desc"
+        "first_sold_at, last_sold_at from rp_items_range(?, ?) order by units desc",
+        (start, end),
     )
 
 
@@ -233,8 +301,9 @@ def sparklines(weekly: pd.DataFrame, weeks: int = SPARKLINE_WEEKS) -> dict[str, 
     return {vid: [float(v) for v in row] for vid, row in zip(pivot.index, pivot.to_numpy())}
 
 
-def for_period(frame: pd.DataFrame, period: str) -> pd.DataFrame:
-    return frame[frame["period_label"] == period]
+def full_history_bounds(coverage: pd.Series) -> tuple[date, date]:
+    """The widest window there is — used for anything that must not be windowed."""
+    return coverage["first_sale_date"], coverage["last_sale_date"]
 
 
 # --- header & period control -----------------------------------------------
@@ -258,99 +327,169 @@ def render_header(coverage: pd.Series, p: design.Palette) -> None:
     design.header("RetailPulse", subtitle, label, tone, p)
 
 
-def render_period_picker(periods: pd.DataFrame) -> pd.Series:
-    """The control that drives the entire page. Returns the chosen period row."""
-    labels = periods["period_label"].tolist()
-    default = DEFAULT_PERIOD if DEFAULT_PERIOD in labels else labels[0]
-    chosen = st.segmented_control(
-        "Period",
-        options=labels,
-        default=default,
-        key="period",
-        label_visibility="collapsed",
-        help="Changes every number on the page. Each window is compared against "
-        "the same length of time immediately before it.",
-    )
-    # segmented_control returns None if the user clicks the active pill off.
-    period = periods[periods["period_label"] == (chosen or default)].iloc[0]
+CUSTOM = "Custom"
 
-    caption = (
-        f"**{period['period_start']:%b %-d} – {period['period_end']:%b %-d, %Y}**"
-        if period["period_days"]
-        else f"**Everything through {period['period_end']:%b %-d, %Y}**"
-    )
-    if period["prior_window_complete"]:
-        caption += (
-            f" · compared with the previous {int(period['period_days'])} days "
-            f"({period['prior_start']:%b %-d} – {period['prior_end']:%b %-d})"
+
+def _as_date(value) -> date:
+    """DuckDB DATEs arrive as pandas Timestamps; the pickers want real dates."""
+    return value.date() if isinstance(value, pd.Timestamp) else value
+
+
+def _select_preset(periods: pd.DataFrame) -> None:
+    """Preset clicked: adopt its bounds, and push them into the date picker.
+
+    The date input owns its own widget state once it has a key, so setting the
+    canonical window alone would leave the two controls disagreeing on screen.
+    Writing the widget's state here is what keeps them in step.
+    """
+    label = st.session_state.get("rp_preset")
+    if not label or label == CUSTOM:
+        return
+    row = periods[periods["period_label"] == label].iloc[0]
+    start, end = _as_date(row["period_start"]), _as_date(row["period_end"])
+    st.session_state["rp_window"] = (start, end)
+    st.session_state["rp_dates"] = (start, end)
+
+
+def _select_dates() -> None:
+    """Dates edited by hand: adopt them and drop the preset highlight."""
+    value = st.session_state.get("rp_dates")
+    # While the user is mid-selection the range input reports a single date.
+    # Committing that would collapse the window to one day under their cursor.
+    if not value or len(value) != 2:
+        return
+    st.session_state["rp_window"] = (_as_date(value[0]), _as_date(value[1]))
+    st.session_state["rp_preset"] = CUSTOM
+
+
+def render_window_control(periods: pd.DataFrame, coverage: pd.Series):
+    """The control that drives the entire page. Sticky, so it is never scrolled away.
+
+    Returns the selected window, the label to describe it by, and a slot to
+    write the resolved-window caption into. The caption is deferred because it
+    reports figures that only exist once the window has been queried, but it
+    belongs *inside* the sticky bar: knowing which window you are looking at
+    matters exactly as much as being able to change it, and a caption that
+    scrolls away leaves the numbers below it unlabelled.
+
+    Presets and the date range are two faces of one piece of state: a preset
+    writes its bounds into the range input, and editing the range demotes the
+    preset to "Custom".
+    """
+    first, last = _as_date(coverage["first_sale_date"]), _as_date(coverage["last_sale_date"])
+
+    if "rp_window" not in st.session_state:
+        default = periods[periods["period_label"] == DEFAULT_PERIOD]
+        row = (default if not default.empty else periods).iloc[0]
+        st.session_state["rp_window"] = (_as_date(row["period_start"]), _as_date(row["period_end"]))
+        st.session_state["rp_preset"] = row["period_label"]
+        st.session_state["rp_dates"] = st.session_state["rp_window"]
+
+    with st.container(key="rp-window-bar"):
+        left, right = st.columns([3, 2], vertical_alignment="center")
+        with left:
+            st.segmented_control(
+                "Period",
+                options=[*periods["period_label"].tolist(), CUSTOM],
+                key="rp_preset",
+                on_change=_select_preset,
+                args=(periods,),
+                label_visibility="collapsed",
+                help="Changes every number on the page. Each window is compared "
+                "against the same length of time immediately before it.",
+            )
+        with right:
+            st.date_input(
+                "Date range",
+                key="rp_dates",
+                on_change=_select_dates,
+                # Bounded by the data: a window outside the extract can only
+                # produce an empty page that looks like a broken dashboard.
+                min_value=first,
+                max_value=last,
+                # st.date_input only accepts numeric patterns; US order to
+                # match the rest of the page's date formatting.
+                format="MM/DD/YYYY",
+                label_visibility="collapsed",
+                help=f"Any range between {first:%b %-d, %Y} and {last:%b %-d, %Y}.",
+            )
+        caption_slot = st.empty()
+
+    start, end = st.session_state["rp_window"]
+    label = st.session_state.get("rp_preset") or CUSTOM
+    return start, end, label, caption_slot
+
+
+def window_caption(summary: pd.Series, label: str) -> str:
+    """One line naming the window on screen and what it is measured against."""
+    start, end = summary["period_start"], summary["period_end"]
+    days = int(summary["period_days"])
+    span = f"**{start:%b %-d, %Y} – {end:%b %-d, %Y}** · {days:,} days"
+    if label != CUSTOM and label:
+        span = f"**{label}** · {start:%b %-d} – {end:%b %-d, %Y}"
+
+    if summary["prior_window_complete"]:
+        return (
+            f"{span} · compared with the previous {days:,} days "
+            f"({summary['prior_start']:%b %-d} – {summary['prior_end']:%b %-d, %Y})"
         )
-    else:
-        caption += " · no comparison — not enough history behind this window yet"
-    st.caption(caption)
-    return period
+    return f"{span} · no comparison — not enough history behind this window yet"
 
 
 # --- tab: overview ---------------------------------------------------------
 
 
+def _prior_note(summary: pd.Series, period: pd.Series, field: str, fmt) -> str:
+    """'Previous 30 days: $103,555.00' — the number behind the percentage.
+
+    A delta of -0.9% is only actionable next to what it is -0.9% *of*. This is
+    the figure a shopkeeper actually wants, and it replaces the axis-less spark
+    line that used to occupy this space: that line had no scale, no baseline
+    and no labels, so it could show a shape but never answer a question.
+    """
+    if not period["prior_window_complete"] or pd.isna(summary[field]):
+        return " No comparable earlier window in the data yet."
+    return f" Previous {int(period['period_days'])} days: {fmt(summary[field])}."
+
+
 def render_headline(summary: pd.Series, daily: pd.DataFrame, period: pd.Series) -> None:
-    # Row 1 is the four measures kpi_daily_sales also publishes a daily series
-    # for, so every tile in it carries a spark line and the row stays uniform.
-    # Ratios and totals without a daily series live in row 2.
-    window = daily[
-        (daily["sale_date"] >= pd.Timestamp(period["period_start"]))
-        & (daily["sale_date"] <= pd.Timestamp(period["period_end"]))
-    ]
-    net_series = window["net_sales_cents"].div(100).tolist()
-    order_series = window["orders"].tolist()
-    aov_series = window["avg_order_value_cents"].div(100).tolist()
-    unit_series = window["units"].tolist()
-
-    vs = (
-        f"vs. the previous {int(period['period_days'])} days"
-        if period["prior_window_complete"]
-        else "no comparable earlier window in the data yet"
-    )
-
+    # Every tile is a number, its change, and the number it changed from. The
+    # trend itself belongs in "Sales by day" below, where it has axes, a scale
+    # and a 7-day average to read it against.
     row1 = st.columns(4)
     row1[0].metric(
         "Sales",
         dollars(summary["net_sales_cents"]),
         delta=change(summary["net_sales_change_pct"]),
         border=True,
-        height=TILE_HEIGHT,
-        chart_data=net_series,
-        chart_type="area",
-        help=f"After discounts, before tax. Change is {vs}.",
+        height=TILE_COMPACT,
+        help="After discounts, before tax."
+        + _prior_note(summary, period, "prior_net_sales_cents", dollars),
     )
     row1[1].metric(
         "Sales count",
         f"{int(summary['orders']):,}",
         delta=change(summary["orders_change_pct"]),
         border=True,
-        height=TILE_HEIGHT,
-        chart_data=order_series,
-        chart_type="area",
-        help=f"Number of transactions rung up. Change is {vs}.",
+        height=TILE_COMPACT,
+        help="Number of transactions rung up."
+        + _prior_note(summary, period, "prior_orders", lambda v: f"{int(v):,}"),
     )
     row1[2].metric(
         "Average sale",
         dollars(summary["avg_order_value_cents"]),
         border=True,
-        height=TILE_HEIGHT,
-        chart_data=aov_series,
-        chart_type="area",
-        help="Sales divided by transactions.",
+        height=TILE_COMPACT,
+        help="Sales divided by transactions — what a typical basket is worth.",
     )
     row1[3].metric(
         "Items sold",
         f"{int(summary['units']):,}",
         delta=change(summary["units_change_pct"]),
         border=True,
-        height=TILE_HEIGHT,
-        chart_data=unit_series,
-        chart_type="area",
-        help=f"{summary['units_per_order']:.2f} items per transaction on average. Change is {vs}.",
+        height=TILE_COMPACT,
+        help=f"{summary['units_per_order']:.2f} items per transaction on average."
+        + _prior_note(summary, period, "prior_units", lambda v: f"{int(v):,}"),
     )
 
     # Four to a row throughout: five tiles at this width truncates the
@@ -423,12 +562,23 @@ def render_daily_sales(daily: pd.DataFrame, period: pd.Series, p: design.Palette
         # need the opposite: daily ticks over a year get thinned to bare
         # day-of-month labels that repeat across months, so there Vega picks
         # the interval and the format names the month.
-        if len(window) <= 45:
-            x_axis = alt.Axis(tickCount={"interval": "day", "step": 1}, labelOverlap=True)
-        else:
-            x_axis = alt.Axis(format="%b %-d", labelOverlap=True)
+        #
+        # The tick step is computed rather than left to Vega's overlap
+        # detection. Vega measures label widths on a canvas at render time; the
+        # webfont loads asynchronously, so it measures in the fallback face,
+        # concludes the labels fit, and then the real font swaps in and they
+        # collide. Deciding the step from the number of days is independent of
+        # which font happens to have loaded.
+        step = max(1, -(-len(window) // MAX_DATE_LABELS))
+        x_axis = alt.Axis(
+            tickCount={"interval": "day", "step": step},
+            format="%b %-d",
+            labelOverlap="greedy",
+        )
         x = alt.X("sale_date:T", title=None, axis=x_axis)
-        y = alt.Y("net_sales:Q", title=None, axis=alt.Axis(format="$,.0f"))
+        # Axis titles name the measure. The dollar format alone tells you it
+        # is money, not which money — net of discounts, before tax.
+        y = alt.Y("net_sales:Q", title="Net sales", axis=alt.Axis(format="$,.0f"))
 
         # Two series share one axis (both are dollars), so they belong on one
         # plot — and because there are two, a legend is required. Encoding the
@@ -497,7 +647,7 @@ def render_categories(categories: pd.DataFrame) -> None:
                 # vertical. Bars laid out horizontally invert that: the value
                 # axis is X, so the grid moves with it and the category axis
                 # goes bare.
-                x=alt.X("net_sales:Q", title=None, axis=alt.Axis(format="$,.0f", grid=True)),
+                x=alt.X("net_sales:Q", title="Net sales", axis=alt.Axis(format="$,.0f", grid=True)),
                 # Never drop a bar's label: Vega hides alternates by default at
                 # this row count, which reads as a chart with missing rows.
                 y=alt.Y(
@@ -542,65 +692,117 @@ def render_categories(categories: pd.DataFrame) -> None:
                 )
 
 
-def render_when_you_sell(weekday: pd.DataFrame, hourly: pd.DataFrame) -> None:
+def render_when_you_sell(popular: pd.DataFrame, p: design.Palette) -> None:
+    """Busyness by hour for one weekday, in the shape Google's Popular Times uses.
+
+    The two charts this replaced each answered half a question — takings per
+    weekday, and takings per hour across all days. Neither told you whether to
+    put a second person on the till at 5pm on a Friday, because a Friday
+    evening and a Tuesday evening were averaged into the same bar.
+    """
     with st.container(border=True, height="stretch"):
         st.subheader(
-            "When you sell",
-            help="Your store's own local time. Square records every sale in UTC; "
-            "fact_order_line converts it using the location's timezone, so an evening "
-            "sale counts on the evening it happened.",
+            "Popular times",
+            help="Transactions per hour on a typical day of the week, in your store's "
+            "own local time. Bars are scaled against that day's own busiest hour, so a "
+            "quiet Monday is still readable next to a busy Saturday.",
         )
-        if weekday.empty:
+        if popular.empty:
             st.info("No sales in this period.")
             return
-        wd = weekday.assign(net_sales=weekday["net_sales_cents"] / 100)
-        wd_chart = (
-            alt.Chart(wd)
-            .mark_bar(size=design.BAR_MAX_WIDTH, cornerRadiusEnd=design.CORNER_RADIUS)
+
+        days = [d for d in WEEKDAY_ORDER if d in set(popular["day_name"])]
+        busiest = (
+            popular.groupby("day_name", as_index=False)["orders"].sum().sort_values("orders")
+        )
+        default_day = busiest.iloc[-1]["day_name"] if not busiest.empty else days[0]
+
+        chosen = st.segmented_control(
+            "Day",
+            options=days,
+            default=default_day,
+            key="popular_day",
+            label_visibility="collapsed",
+            format_func=lambda d: d[:3],
+        )
+        day = chosen or default_day
+        frame = popular[popular["day_name"] == day]
+        if frame.empty:
+            st.info(f"No sales on a {day} in this period.")
+            return
+
+        # Every hour the store trades in any day of the week, so switching days
+        # doesn't reflow the axis and the shapes stay comparable.
+        span = range(int(popular["hour_of_day"].min()), int(popular["hour_of_day"].max()) + 1)
+        frame = (
+            frame.set_index("hour_of_day")
+            .reindex(span)
+            .assign(
+                hour_of_day=list(span),
+                day_name=day,
+            )
+            .fillna({"orders": 0, "orders_per_day": 0, "busyness_pct": 0, "net_sales_cents": 0})
+            .reset_index(drop=True)
+        )
+        frame["net_sales"] = frame["net_sales_cents"] / 100
+        peak_hour = int(frame.loc[frame["busyness_pct"].idxmax(), "hour_of_day"])
+
+        bars = (
+            alt.Chart(frame)
+            .mark_bar(
+                size=bar_width(len(frame), span=560),
+                cornerRadiusEnd=design.CORNER_RADIUS,
+            )
             .encode(
                 x=alt.X(
-                    "day_name:N",
-                    sort=WEEKDAY_ORDER,
-                    title=None,
-                    # Abbreviate in the axis rather than the data, so all seven
-                    # days stay labelled at any card width.
-                    axis=alt.Axis(labelAngle=0, labelExpr="slice(datum.label, 0, 3)"),
+                    "hour_of_day:O",
+                    title="Hour of day",
+                    axis=alt.Axis(labelAngle=0, labelExpr=HOUR_LABEL),
                 ),
-                y=alt.Y("net_sales:Q", title=None, axis=alt.Axis(format="$,.0f")),
-                tooltip=[
-                    alt.Tooltip("day_name:N", title="Day"),
-                    money_tip("net_sales:Q", "Sales"),
-                    alt.Tooltip("orders:Q", title="Transactions", format=","),
-                ],
-            )
-            .properties(height=CHART_SHORT)
-        )
-        chart(wd_chart)
-
-        hr = hourly.assign(net_sales=hourly["net_sales_cents"] / 100)
-        hour_chart = (
-            alt.Chart(hr)
-            .mark_bar(size=bar_width(len(hr), span=560), cornerRadiusEnd=design.CORNER_RADIUS)
-            .encode(
-                x=alt.X("hour_of_day:O", title="Hour of day", axis=alt.Axis(labelAngle=0)),
-                y=alt.Y("net_sales:Q", title=None, axis=alt.Axis(format="$,.0f")),
+                y=alt.Y(
+                    "busyness_pct:Q",
+                    title="Busyness",
+                    scale=alt.Scale(domain=[0, 100]),
+                    axis=alt.Axis(format="d", values=[0, 25, 50, 75, 100]),
+                ),
+                # The peak hour is the one thing to take away, so it is the only
+                # bar in the second categorical slot rather than a caption.
+                color=alt.condition(
+                    alt.datum.hour_of_day == peak_hour,
+                    alt.value(p.series_2),
+                    alt.value(p.series_1),
+                ),
                 tooltip=[
                     alt.Tooltip("hour_of_day:O", title="Hour"),
-                    money_tip("net_sales:Q", "Sales"),
-                    alt.Tooltip("orders:Q", title="Transactions", format=","),
+                    alt.Tooltip("orders_per_day:Q", title="Transactions (typical)", format=".1f"),
+                    alt.Tooltip("busyness_pct:Q", title="Busyness %", format="d"),
+                    money_tip("net_sales:Q", "Sales in window"),
                 ],
             )
-            .properties(height=CHART_SHORT)
+            .properties(height=CHART_SHORT + 40)
         )
-        chart(hour_chart)
+        chart(bars)
+
+        observed = int(frame["days_observed"].max()) if frame["days_observed"].notna().any() else 0
+        typical = frame.loc[frame["hour_of_day"] == peak_hour, "orders_per_day"].iloc[0]
+        note = (
+            f"Busiest around **{_hour_label(peak_hour)}** — about **{typical:.0f} transactions** "
+            f"in that hour on a typical {day}."
+        )
+        if observed <= 1:
+            # One observation is not a typical anything; say so rather than let
+            # a single day masquerade as a pattern.
+            note += f" Based on only {observed} {day} in this window — widen the range."
+        else:
+            note += f" Averaged over {observed} {day}s."
+        st.caption(note)
 
 
 def render_overview(
     summary: pd.Series,
     daily: pd.DataFrame,
     categories: pd.DataFrame,
-    weekday: pd.DataFrame,
-    hourly: pd.DataFrame,
+    popular: pd.DataFrame,
     period: pd.Series,
     p: design.Palette,
 ) -> None:
@@ -610,7 +812,7 @@ def render_overview(
     with left:
         render_categories(categories)
     with right:
-        render_when_you_sell(weekday, hourly)
+        render_when_you_sell(popular, p)
 
 
 # --- tab: items ------------------------------------------------------------
@@ -858,6 +1060,85 @@ def render_item_detail(
         )
 
 
+def _seller_board(frame: pd.DataFrame, title: str, help_text: str, empty: str, p) -> None:
+    """A ranked bar of top sellers by units, with revenue on the tooltip."""
+    with st.container(border=True, height="stretch"):
+        st.subheader(title, help=help_text)
+        if frame.empty:
+            st.info(empty)
+            return
+        top = frame.nlargest(10, "units").copy()
+        top["label"] = top.apply(item_label, axis=1)
+        top["net_sales"] = top["net_sales_cents"] / 100
+        bars = (
+            alt.Chart(top)
+            .mark_bar(size=design.BAR_MAX_WIDTH, cornerRadiusEnd=design.CORNER_RADIUS)
+            .encode(
+                x=alt.X("units:Q", title="Units sold", axis=alt.Axis(format=",.0f", grid=True)),
+                y=alt.Y(
+                    "label:N",
+                    sort="-x",
+                    title=None,
+                    axis=alt.Axis(labelOverlap=False, labelLimit=200, grid=False),
+                ),
+                tooltip=[
+                    alt.Tooltip("label:N", title="Item"),
+                    alt.Tooltip("category_name:N", title="Category"),
+                    alt.Tooltip("units:Q", title="Units", format=",.0f"),
+                    money_tip("net_sales:Q", "Sales"),
+                ],
+            )
+            .properties(height=CHART_TALL)
+        )
+        chart(bars)
+
+
+def render_top_sellers(items: pd.DataFrame, p: design.Palette) -> None:
+    """Two boards: merchandise you can act on, and lottery on its own.
+
+    Splitting these is the whole point. Scratchers and lotto outsell every real
+    product every single week — the customer picks the store, not the product,
+    and volume follows the jackpot. Ranked together they occupy the entire top
+    of any "best sellers" list and bury the things a buying decision could
+    actually be made about. They are still real revenue, so they get their own
+    board rather than being filtered away.
+
+    `is_lottery` comes from dim_item, driven by the `lottery_categories` var,
+    so this is a filter on a published column rather than category names
+    re-typed in the dashboard.
+    """
+    merch = items[~items["is_lottery"]]
+    lottery = items[items["is_lottery"]]
+
+    left, right = st.columns([3, 2])
+    with left:
+        _seller_board(
+            merch,
+            "Top sellers",
+            "Your best-moving stock, with lottery and scratchers held out so they "
+            "don't crowd out everything you actually choose to buy.",
+            "Nothing but lottery sold in this window.",
+            p,
+        )
+    with right:
+        _seller_board(
+            lottery,
+            "Lottery & scratchers",
+            "Kept separate because these always top the list on units and are driven "
+            "by jackpots rather than anything on your shelves.",
+            "No lottery sales in this window.",
+            p,
+        )
+
+    if not lottery.empty:
+        share = lottery["net_sales_cents"].sum() / max(items["net_sales_cents"].sum(), 1) * 100
+        st.caption(
+            f"Lottery and scratchers are **{share:.0f}%** of item revenue in this window "
+            f"({dollars(lottery['net_sales_cents'].sum())} across "
+            f"{len(lottery):,} products)."
+        )
+
+
 def render_items(
     items: pd.DataFrame,
     weekly: pd.DataFrame,
@@ -865,15 +1146,18 @@ def render_items(
     period: pd.Series,
     p: design.Palette,
 ) -> None:
-    st.subheader(
-        "Item sales",
-        help="How much of each item sold in the selected period, how that compares with "
-        "the previous equivalent stretch, and what it averages per week.",
-    )
     if items.empty:
         st.info("Nothing sold in this period.")
         return
 
+    render_top_sellers(items, p)
+
+    st.markdown("---")
+    st.subheader(
+        "Search every item",
+        help="How much of each item sold in the selected period, how that compares with "
+        "the previous equivalent stretch, and what it averages per week.",
+    )
     view = item_filters(items)
     render_item_table(view, len(items), sparklines(weekly), period)
     render_item_detail(view, weekly, forecast, p)
@@ -882,98 +1166,111 @@ def render_items(
 # --- tab: forecast ---------------------------------------------------------
 
 
-def render_forecast(all_time_items: pd.DataFrame, forecast: pd.DataFrame) -> None:
+def render_forecast(horizons: pd.DataFrame, daily_forecast: pd.DataFrame,
+                    daily: pd.DataFrame, p: design.Palette) -> None:
+    """Expected takings, not expected units.
+
+    The previous version of this tab projected units for four thousand
+    individual items. That answers a reordering question, not a cash one — and
+    summing four thousand per-item trend lines compounds every one of their
+    errors into the total. Money is forecast directly from daily takings
+    instead, which is both the question actually being asked and the series
+    with the most signal in it.
+
+    Always full history, so it does not follow the window control above:
+    forecasting next month from a 7-day window would fit a trend to one week.
+    """
     st.subheader(
-        "What to expect — next 4 weeks",
-        help="A trend line fitted per item over its last few complete weeks, on a series "
-        "that counts quiet weeks as zero. Estimates only: holidays and weather aren't "
-        "modelled. This tab always uses full history, so it doesn't follow the period "
-        "control above.",
+        "What you can expect to take",
+        help="Projected from your own daily takings: the average for that weekday over "
+        "the last 8 weeks, adjusted by how the last 4 weeks compare with the 4 before "
+        "them. Uses full history, so it doesn't follow the date range above.",
     )
-    if forecast.empty:
-        st.info(
-            "Not enough weekly sales history to project yet — needs at least a couple of "
-            "complete weeks."
-        )
+    if horizons.empty or daily_forecast.empty:
+        st.info("Not enough daily sales history to project from yet.")
         return
 
-    totals = (
-        forecast.groupby(["forecast_week_start", "weeks_ahead"], as_index=False)["forecast_units"]
-        .sum()
-        .sort_values("weeks_ahead")
-    )
-    tcols = st.columns(len(totals))
-    for i, (_, r) in enumerate(totals.iterrows()):
-        weeks_ahead = int(r["weeks_ahead"])
-        label = "Next week" if weeks_ahead == 1 else f"In {weeks_ahead} weeks"
-        tcols[i].metric(
-            label,
-            f"{int(r['forecast_units']):,}",
+    row = horizons.iloc[0]
+    tiles = st.columns(len(horizons))
+    for tile, (_, h) in zip(tiles, horizons.iterrows()):
+        tile.metric(
+            h["horizon_label"],
+            dollars(h["forecast_net_sales_cents"]),
             border=True,
-            help=f"Items expected to sell in the week starting "
-            f"{r['forecast_week_start']:%b %-d, %Y}",
+            height=TILE_COMPACT,
+            help=f"{h['period_start']:%b %-d} – {h['period_end']:%b %-d, %Y} · "
+            f"about {dollars(h['forecast_daily_avg_cents'])} a day.",
         )
 
-    fallbacks = int(forecast.loc[forecast["method"] == "avg_fallback", "variation_id"].nunique())
-    median_history = int(forecast["weeks_of_history"].median())
-    st.caption(
-        f"Projected items across the whole catalog, from a median of {median_history} weeks "
-        "of history per item"
-        + (
-            f"; {fallbacks:,} item(s) had too little history for a trend and fall back to "
-            "their average."
-            if fallbacks
-            else " — every item had enough history for a trend fit."
-        )
+    # Accuracy up front, not in a footnote. A projection that doesn't say how
+    # wrong it usually is invites more trust than it has earned.
+    beats = row["points_better_than_baseline"] > 0
+    verdict = (
+        f"Typically within **{dollars(row['mae_cents'])} a day** "
+        f"({row['wape_pct']:.1f}% of takings) when tested on the last "
+        f"{int(row['backtest_days'])} days it had never seen."
     )
+    if beats:
+        verdict += (
+            f" That beats a flat daily average, which was out by "
+            f"{row['baseline_wape_pct']:.1f}% — {row['points_better_than_baseline']:.1f} "
+            "points worse."
+        )
+    else:
+        # Saying so is the point of measuring it.
+        verdict += (
+            f" A flat daily average scored {row['baseline_wape_pct']:.1f}%, so the "
+            "weekday model is **not** earning its complexity here — treat these as a "
+            "rough guide."
+        )
+    st.caption(verdict)
 
     with st.container(border=True):
-        head, control = st.columns([3, 1], vertical_alignment="bottom")
-        with head:
-            st.subheader("Expected sales by item and week")
-        search = control.text_input(
-            "Search", placeholder="item name…", key="forecast_search", label_visibility="collapsed"
+        st.subheader(
+            "Day by day",
+            help="Each day's projection against what you actually took on that weekday "
+            "over recent weeks. Weekends are worth more than midweek, which is why the "
+            "line moves in a repeating shape rather than trending smoothly.",
         )
+        recent = daily.tail(28).assign(
+            value=lambda f: f["net_sales_cents"] / 100,
+            series="Actual",
+        )[["sale_date", "value", "series"]].rename(columns={"sale_date": "day"})
+        ahead = daily_forecast.assign(
+            value=lambda f: f["forecast_net_sales_cents"] / 100,
+            series="Forecast",
+        )[["forecast_date", "value", "series"]].rename(columns={"forecast_date": "day"})
+        combined = pd.concat([recent, ahead], ignore_index=True)
+        combined["day"] = pd.to_datetime(combined["day"])
 
-        pivot = forecast.pivot_table(
-            index="variation_id",
-            columns="forecast_week_start",
-            values="forecast_units",
-            aggfunc="sum",
-        ).fillna(0)
-        pivot.columns = [f"Wk of {pd.Timestamp(c):%b %-d}" for c in pivot.columns]
-        week_columns = list(pivot.columns)
-
-        names = all_time_items.set_index("variation_id")
-        table = pivot.join(names[["item_name", "variation_name", "category_name"]], how="left")
-        table["Item"] = table.apply(item_label, axis=1)
-        table["Category"] = table["category_name"].fillna("—")
-        table["Next 4 weeks"] = table[week_columns].sum(axis=1)
-
-        if search:
-            needle = search.strip().lower()
-            table = table[table["Item"].str.lower().str.contains(needle, regex=False)]
-        table = table.sort_values("Next 4 weeks", ascending=False)
-        shown = table.head(100)
-
-        if shown.empty:
-            st.info("No items match that search.")
-            return
-        st.dataframe(
-            shown[["Item", "Category", *week_columns, "Next 4 weeks"]],
-            hide_index=True,
-            width="stretch",
-            height=table_height(len(shown)),
-            column_config={
-                "Item": st.column_config.TextColumn(width="large", pinned=True),
-                "Category": st.column_config.TextColumn(width="small"),
-                **{
-                    col: st.column_config.NumberColumn(format="localized")
-                    for col in [*week_columns, "Next 4 weeks"]
-                },
-            },
+        scale = alt.Scale(domain=["Actual", "Forecast"], range=[p.series_1, p.series_2])
+        line = (
+            alt.Chart(combined)
+            .mark_line(strokeWidth=design.LINE_WIDTH, point=False)
+            .encode(
+                x=alt.X(
+                    "day:T",
+                    title=None,
+                    axis=alt.Axis(format="%b %-d", labelOverlap="greedy"),
+                ),
+                y=alt.Y("value:Q", title="Net sales", axis=alt.Axis(format="$,.0f")),
+                # Colour alone separates actual from projected: two series, and
+                # two is exactly what the categorical palette is validated for.
+                color=alt.Color("series:N", scale=scale, legend=alt.Legend(title=None)),
+                tooltip=[
+                    alt.Tooltip("day:T", title="Day", format="%a %b %-d"),
+                    money_tip("value:Q", "Net sales"),
+                    alt.Tooltip("series:N", title=""),
+                ],
+            )
+            .properties(height=CHART_TALL)
         )
-        st.caption(f"Showing {len(shown):,} of {len(table):,} items, busiest first.")
+        chart(line)
+        st.caption(
+            f"Last 28 days actual, then {len(daily_forecast)} days projected. "
+            f"Trend factor **{row['trend_factor']:.3f}** — the last 4 weeks against the 4 "
+            "before them, clamped so one freak fortnight can't run away with it."
+        )
 
 
 # --- tab: back office ------------------------------------------------------
@@ -1076,7 +1373,7 @@ def render_margin() -> None:
                     # Horizontal bars: grid follows the value axis. See the
                     # same inversion in render_categories.
                     x=alt.X(
-                        "gross_profit:Q", title=None, axis=alt.Axis(format="$,.0f", grid=True)
+                        "gross_profit:Q", title="Gross profit", axis=alt.Axis(format="$,.0f", grid=True)
                     ),
                     y=alt.Y(
                         "category_name:N",
@@ -1157,46 +1454,46 @@ def main() -> None:
         )
         return
 
-    with st.spinner("Loading…"):
-        periods = load_periods()
-        coverage = load_coverage()
-        summaries = load_summary()
-        daily = load_daily()
-        categories = load_categories()
-        weekday = load_weekday()
-        hourly = load_hourly()
-        payments = load_payments()
-        items = load_items()
-        weekly = load_weekly()
-        forecast = load_forecast()
+    # Loaded before the control, because the control needs the extract's bounds
+    # to constrain the date picker.
+    periods = load_periods()
+    coverage = load_coverage()
 
     render_header(coverage, p)
     render_sidebar(coverage)
-    period = render_period_picker(periods)
-    label = period["period_label"]
+    start, end, label, caption_slot = render_window_control(periods, coverage)
+
+    with st.spinner("Loading…"):
+        summary = load_summary(start, end)
+        daily = load_daily()
+        categories = load_categories(start, end)
+        popular = load_popular_times(start, end)
+        payments = load_payments(start, end)
+        items = load_items(start, end)
+        weekly = load_weekly()
+        forecast = load_forecast()
+        revenue_horizons = load_revenue_forecast()
+        revenue_daily = load_revenue_forecast_daily()
+
+    caption_slot.caption(window_caption(summary, label))
+
+    # The summary row already carries the window's bounds, length and whether
+    # its prior window is fully covered, so it doubles as the window descriptor
+    # every section needs. One object, one source.
+    window = summary.copy()
+    window["period_label"] = label
 
     overview_tab, items_tab, forecast_tab, back_office_tab = st.tabs(
         ["Overview", "Items", "Forecast", "Back office"]
     )
     with overview_tab:
-        render_overview(
-            for_period(summaries, label).iloc[0],
-            daily,
-            for_period(categories, label),
-            for_period(weekday, label),
-            for_period(hourly, label),
-            period,
-            p,
-        )
+        render_overview(summary, daily, categories, popular, window, p)
     with items_tab:
-        render_items(for_period(items, label), weekly, forecast, period, p)
+        render_items(items, weekly, forecast, window, p)
     with forecast_tab:
-        # The forecast is fitted on full history and doesn't vary by period, so
-        # names are resolved from the All time slice — anything narrower would
-        # leave items that didn't sell recently without a label.
-        render_forecast(for_period(items, "All time"), forecast)
+        render_forecast(revenue_horizons, revenue_daily, daily, p)
     with back_office_tab:
-        render_back_office(for_period(payments, label))
+        render_back_office(payments)
 
 
 if __name__ == "__main__":

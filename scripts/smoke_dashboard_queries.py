@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 import duckdb
@@ -19,6 +20,51 @@ import duckdb
 WAREHOUSE_PATH = Path(
     os.environ.get("RETAILPULSE_WAREHOUSE_PATH", "data/gold/warehouse.duckdb")
 )
+
+# The parameterized macros the dashboard calls for every window, preset or not.
+# dbt's assert_range_macros_match_periods already proves they agree with the
+# precomputed models; what this checks is cruder and complementary — that they
+# exist, are callable with two dates, and return something. A macro that failed
+# to register would leave `dbt build` green (the test would simply find nothing
+# to disagree with) and break every page load.
+RANGE_MACROS = [
+    ("rp_summary_range", True),
+    ("rp_category_range", True),
+    ("rp_weekday_range", True),
+    ("rp_hour_range", True),
+    ("rp_payments_range", True),
+    ("rp_items_range", True),
+]
+
+
+def check_range_macros(con) -> list[str]:
+    """Call every range macro over an arbitrary window that matches no preset."""
+    failures: list[str] = []
+    bounds = con.execute(
+        "select min(sale_date), max(sale_date) from main_marts.fact_order_line "
+        "where sale_date is not null"
+    ).fetchone()
+    if not bounds or bounds[0] is None:
+        return ["no dated sales, cannot exercise the range macros"]
+
+    # Deliberately not a preset length: presets are covered by the dbt test, so
+    # this exercises the arbitrary-window path the dashboard now depends on.
+    end = bounds[1]
+    start = max(bounds[0], end - timedelta(days=39))
+
+    for macro, must_have_rows in RANGE_MACROS:
+        try:
+            rows = con.execute(f"select count(*) from {macro}(?, ?)", (start, end)).fetchone()[0]
+        except duckdb.Error as exc:
+            failures.append(f"{macro}: not callable ({str(exc).splitlines()[0]})")
+            continue
+        if must_have_rows and rows == 0:
+            failures.append(f"{macro}: returned no rows for {start}..{end}")
+        else:
+            print(f"  ok: {macro}({start}, {end}) -> {rows:,} row(s)")
+
+    return failures
+
 
 # (table, must_be_non_empty) — every relation dashboard/app.py queries.
 # kpi_inventory_position is deliberately absent: the model still builds and is
@@ -105,6 +151,8 @@ def main() -> int:
         ).fetchone()[0]
         if summary_dupes:
             failures.append(f"kpi_summary has {summary_dupes} period(s) with more than one row")
+
+        failures.extend(check_range_macros(con))
     finally:
         con.close()
 
