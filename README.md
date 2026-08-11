@@ -47,7 +47,13 @@ flowchart LR
     K --> F[Streamlit dashboard]
 ```
 
-The pipeline runs as a **Dagster asset graph** — 42 assets, two scheduled jobs and two asset checks — with the dbt project loaded through `dagster-dbt`, so all 33 models appear as individual assets with real lineage rather than one opaque "run dbt" step. Orders and payments are partitioned by **store-local day**, so one day is the unit of both scheduling and backfill.
+A **medallion architecture** — Bronze (immutable raw JSON), Silver (a normalised Parquet lake), Gold (a dimensional warehouse). The two halves are deliberately different shapes: Bronze → Silver is a classic **ETL** step, normalising and deduplicating Square's nested payloads in Python before anything is loaded; Silver → Gold is **ELT**, where every business transformation is version-controlled, tested SQL running inside the warehouse.
+
+Gold is a **star schema**. Four fact tables (`fact_order_line`, `fact_payment`, `fact_inventory_snapshot`, `fact_order_line_margin`) join conformed dimensions (`dim_item`, `dim_location`, `dim_date`, `dim_vendor`, `dim_period`) on surrogate keys, and each model declares its grain.
+
+The pipeline runs as a **Dagster asset graph** — 42 assets, two scheduled jobs and two asset checks — with the dbt project loaded through `dagster-dbt`, so all 33 models appear as individual assets with **column-level data lineage** rather than one opaque "run dbt" step. Orders and payments are partitioned by **store-local day**, so one day is the unit of both scheduling and backfill.
+
+**Re-running is safe.** Bronze is append-only and immutable: each page is written to a partitioned path with the run id in the filename, and the writer refuses to overwrite. Silver then deduplicates to the latest version of each record, which makes the Silver and Gold rebuild **idempotent** — the warehouse is a pure function of Bronze, so running the pipeline twice produces the same warehouse rather than double-counting. That property is what makes a **backfill** of any store-day range a safe operation rather than a careful one.
 
 ```bash
 make dagster   # asset graph, run history and backfills at localhost:3000
@@ -82,6 +88,19 @@ python3 scripts/compare_warehouses.py
 It found a real bug that no build would ever catch: BigQuery's `extract(week from ...)` counts weeks from the first Sunday of the year, so `dim_date.week_of_year` read 29 where the ISO answer is 30, in a column no test asserted. The same class of thing hides in `dayname` ("Monday" on DuckDB, "Mon" on Snowflake) and `date_trunc(x, WEEK)` (Sunday on BigQuery, Monday elsewhere). All of them compile everywhere and mean different things.
 
 Ten of the twelve checks require exact agreement. Two allow 0.01%, documented in the script: forecast units and backtest error are rounded floating-point regression output, and last-bit differences tip 14 of 8,432 rows across a rounding boundary by exactly one unit each.
+
+### Data quality is the point, not a section at the end
+
+**93 dbt tests** and **58 pytest tests** run on every push, plus two Dagster **asset checks** that catch what tests cannot.
+
+The distinction the suite is built around: a schema test tells you a column is non-null; it does not tell you the number is *right*. So alongside the `unique`/`not_null`/`accepted_values` coverage there are six singular tests asserting business invariants — that a period never reports more sales than the period containing it, that every order's recorded total equals what was collected, that the custom-range API agrees exactly with the precomputed models, that no forecast is NaN or negative, that the calendar spine covers every day with sales.
+
+The asset checks cover the failure modes that leave everything green:
+
+- **`sales_are_fresh`** — a **freshness SLA of two days**. Every model can build, every test can pass, and the dashboard can look healthy while showing data that stopped updating a week ago, because "no new rows" breaks no constraint.
+- **`peak_hour_is_within_business_hours`** — a timezone-regression guard. If the busiest hour of the day drifts outside plausible trading hours, something has reintroduced the UTC bug below.
+
+That is what **pipeline observability** means here: not a dashboard of green ticks, but named checks for the specific ways this pipeline can lie to you.
 
 ### The bug worth reading about
 
@@ -164,7 +183,17 @@ The models are portable; the *ingestion* is not, which is why each cloud target 
 
 ## Technologies
 
-Python 3.11 · [httpx](https://www.python-httpx.org/) · [pydantic](https://docs.pydantic.dev/) + pydantic-settings · [DuckDB](https://duckdb.org/) · [dbt](https://www.getdbt.com/) (`dbt-duckdb`, `dbt-snowflake`, `dbt-bigquery`) · [Dagster](https://dagster.io/) + dagster-dbt · [Streamlit](https://streamlit.io/) + Altair · Docker · Terraform · Airflow (a parallel DAG, for comparison) · pytest + ruff · Square REST API `2026-07-15`
+**Languages & modelling** — Python 3.11, SQL, dimensional modelling (star schema, conformed dimensions, surrogate keys, declared grain), ELT, medallion architecture
+
+**Warehouses** — [DuckDB](https://duckdb.org/), [Snowflake](https://www.snowflake.com/), [BigQuery](https://cloud.google.com/bigquery); [dbt](https://www.getdbt.com/) via `dbt-duckdb` / `dbt-snowflake` / `dbt-bigquery`
+
+**Orchestration** — [Dagster](https://dagster.io/) + dagster-dbt (assets, daily partitions, backfills, asset checks, schedules) and a parallel [Airflow](https://airflow.apache.org/) DAG for comparison
+
+**Platform** — Docker & Compose, [Terraform](https://www.terraform.io/) on GCP (Cloud Storage, BigQuery dataset, service account, IAM), GitHub Actions CI/CD
+
+**Data quality** — dbt tests and contracts, custom singular tests for business invariants, Dagster asset checks, freshness SLA, `scripts/compare_warehouses.py`
+
+**Ingestion & presentation** — [httpx](https://www.python-httpx.org/) with bounded retry/backoff against the Square REST API `2026-07-15`, [pydantic](https://docs.pydantic.dev/) + pydantic-settings for typed secret-aware config, Parquet, [Streamlit](https://streamlit.io/) + Altair, pytest + ruff
 
 **Why DuckDB as the default:** it is a free, embedded, columnar OLAP engine, and reading Parquet directly off disk is the same pattern a lakehouse uses with S3 and Iceberg, minus the account. Anyone can clone this repo and get a working warehouse in one command — which is also why the Snowflake and BigQuery targets exist: to show the choice is not a constraint.
 
