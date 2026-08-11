@@ -41,9 +41,9 @@
 
 -- Parse time: dim_period has not been read, so there is nothing to compare.
 select
-    cast(null as varchar) as macro_name,
-    cast(null as varchar) as period_label,
-    cast(null as varchar) as detail
+    cast(null as {{ string_type() }}) as macro_name,
+    cast(null as {{ string_type() }}) as period_label,
+    cast(null as {{ string_type() }}) as detail
 where 1 = 0
 
 {%- else %}
@@ -119,7 +119,7 @@ weekday_mismatch as (
     select
         'rp_weekday_range' as macro_name,
         coalesce(r.period_label, k.period_label) as period_label,
-        cast(coalesce(r.day_of_week, k.day_of_week) as varchar) as detail
+        cast(coalesce(r.day_of_week, k.day_of_week) as {{ string_type() }}) as detail
     from m_weekday r
     full outer join {{ kpi_sales_by_weekday }} k
         on k.period_label = r.period_label
@@ -135,7 +135,7 @@ hour_mismatch as (
     select
         'rp_hour_range' as macro_name,
         coalesce(r.period_label, k.period_label) as period_label,
-        cast(coalesce(r.hour_of_day, k.hour_of_day) as varchar) as detail
+        cast(coalesce(r.hour_of_day, k.hour_of_day) as {{ string_type() }}) as detail
     from m_hour r
     full outer join {{ kpi_sales_by_hour }} k
         on k.period_label = r.period_label

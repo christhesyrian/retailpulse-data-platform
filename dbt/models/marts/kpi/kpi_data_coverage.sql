@@ -26,17 +26,17 @@ select
     max(closed_at_local) as last_order_at,
     {{ date_diff_in('day', 'min(sale_date)', 'max(sale_date)') }} + 1 as days_covered,
     count(distinct sale_date) as days_with_sales,
-    count(distinct date_trunc('week', sale_date)) as weeks_covered,
+    count(distinct {{ date_trunc_to('week', 'sale_date') }}) as weeks_covered,
     -- complete ISO weeks only — what the forecast can actually fit on.
     -- Spelled as a conditional CASE rather than the SQL-standard aggregate
     -- FILTER clause, which DuckDB accepts and Snowflake has no support for.
     count(distinct case
-        when date_trunc('week', sale_date) < date_trunc('week', current_date)
+        when {{ date_trunc_to('week', 'sale_date') }} < {{ date_trunc_to('week', 'current_date') }}
             then sale_date
     end) as days_in_complete_weeks,
     count(distinct case
-        when date_trunc('week', sale_date) < date_trunc('week', current_date)
-            then date_trunc('week', sale_date)
+        when {{ date_trunc_to('week', 'sale_date') }} < {{ date_trunc_to('week', 'current_date') }}
+            then {{ date_trunc_to('week', 'sale_date') }}
     end) as complete_weeks_covered,
     count(distinct square_order_id) as orders,
     count(distinct variation_id) as items_sold,

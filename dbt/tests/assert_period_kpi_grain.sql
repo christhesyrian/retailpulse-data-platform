@@ -8,7 +8,7 @@
 -- kpi_item_weekly_sales was regrouped.
 -- `row_count`, not `rows`: the latter is a reserved word on Snowflake and
 -- fails to parse there while being a perfectly good alias on DuckDB.
-select 'kpi_summary' as model, period_label, cast('' as varchar) as key_2, count(*) as row_count
+select 'kpi_summary' as model, period_label, cast('' as {{ string_type() }}) as key_2, count(*) as row_count
 from {{ ref('kpi_summary') }}
 group by 1, 2, 3
 having count(*) > 1
@@ -22,14 +22,14 @@ having count(*) > 1
 
 union all
 
-select 'kpi_sales_by_weekday', period_label, cast(day_of_week as varchar), count(*)
+select 'kpi_sales_by_weekday', period_label, cast(day_of_week as {{ string_type() }}), count(*)
 from {{ ref('kpi_sales_by_weekday') }}
 group by 1, 2, 3
 having count(*) > 1
 
 union all
 
-select 'kpi_sales_by_hour', period_label, cast(hour_of_day as varchar), count(*)
+select 'kpi_sales_by_hour', period_label, cast(hour_of_day as {{ string_type() }}), count(*)
 from {{ ref('kpi_sales_by_hour') }}
 group by 1, 2, 3
 having count(*) > 1

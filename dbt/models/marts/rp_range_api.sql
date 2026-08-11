@@ -18,13 +18,20 @@
 -- depends_on: {{ ref('dim_item') }}
 -- depends_on: {{ ref('dim_period') }}
 
-select * from (values
-    ('rp_window',         'start DATE, end DATE', 'Window bounds, prior window, and whether the prior window is fully covered'),
-    ('rp_summary_range',  'start DATE, end DATE', 'Headline KPIs with prior-window comparison — mirrors kpi_summary'),
-    ('rp_category_range', 'start DATE, end DATE', 'Net sales by category — mirrors kpi_sales_by_category'),
-    ('rp_weekday_range',  'start DATE, end DATE', 'Net sales by weekday — mirrors kpi_sales_by_weekday'),
-    ('rp_hour_range',     'start DATE, end DATE', 'Net sales by hour of day — mirrors kpi_sales_by_hour'),
-    ('rp_popular_times_range', 'start DATE, end DATE', 'Busyness by hour for each weekday, scaled to that day''s peak'),
-    ('rp_payments_range', 'start DATE, end DATE', 'Collected and fees by payment method — mirrors kpi_payment_methods'),
-    ('rp_items_range',    'start DATE, end DATE', 'Per-item units and revenue — mirrors kpi_item_sales')
-) as t(macro_name, signature, description)
+-- UNION ALL rather than a `(values ...) as t(cols)` constructor, which
+-- BigQuery does not accept. See dim_period for the same note.
+select
+    'rp_window' as macro_name,
+    'start DATE, end DATE' as signature,
+    'Window bounds, prior window, and whether the prior window is fully covered' as description
+union all select 'rp_summary_range',  'start DATE, end DATE', 'Headline KPIs with prior-window comparison — mirrors kpi_summary'
+union all select 'rp_category_range', 'start DATE, end DATE', 'Net sales by category — mirrors kpi_sales_by_category'
+union all select 'rp_weekday_range',  'start DATE, end DATE', 'Net sales by weekday — mirrors kpi_sales_by_weekday'
+union all select 'rp_hour_range',     'start DATE, end DATE', 'Net sales by hour of day — mirrors kpi_sales_by_hour'
+-- No apostrophe in that last description on purpose: SQL's doubled-quote
+-- escape ('day''s') is not an escape on BigQuery, which reads it as two
+-- adjacent string literals and fails with "concatenated string literals must
+-- be separated by whitespace or comments".
+union all select 'rp_popular_times_range', 'start DATE, end DATE', 'Busyness by hour for each weekday, scaled to the busiest hour of that day'
+union all select 'rp_payments_range', 'start DATE, end DATE', 'Collected and fees by payment method — mirrors kpi_payment_methods'
+union all select 'rp_items_range',    'start DATE, end DATE', 'Per-item units and revenue — mirrors kpi_item_sales'

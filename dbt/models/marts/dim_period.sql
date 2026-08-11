@@ -30,13 +30,14 @@ with anchor as (
 ),
 
 defs as (
-    select * from (values
-        ('Last 7 days', 7, 1),
-        ('Last 30 days', 30, 2),
-        ('Last 90 days', 90, 3),
-        ('Last 365 days', 365, 4),
-        ('All time', cast(null as integer), 5)
-    ) as t(period_label, period_days, period_order)
+    -- Spelled as UNION ALL rather than a `(values ...) as t(cols)` table
+    -- constructor: that form is DuckDB/Snowflake syntax and BigQuery rejects
+    -- it with a misleading "Expected keyword JOIN but got ','".
+    select 'Last 7 days' as period_label, 7 as period_days, 1 as period_order
+    union all select 'Last 30 days', 30, 2
+    union all select 'Last 90 days', 90, 3
+    union all select 'Last 365 days', 365, 4
+    union all select 'All time', cast(null as integer), 5
 )
 
 select

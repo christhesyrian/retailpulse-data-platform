@@ -106,11 +106,11 @@ errors as (
 
 -- --- horizons -----------------------------------------------------------
 horizons as (
-    select * from (values
-        ('Tomorrow', 1, 1),
-        ('Next 7 days', 7, 2),
-        ('Next 30 days', 30, 3)
-    ) as t(horizon_label, horizon_days, horizon_order)
+    -- UNION ALL rather than a `(values ...) as t(cols)` constructor, which
+    -- BigQuery does not accept. See dim_period for the same note.
+    select 'Tomorrow' as horizon_label, 1 as horizon_days, 1 as horizon_order
+    union all select 'Next 7 days', 7, 2
+    union all select 'Next 30 days', 30, 3
 ),
 
 forecast as (select * from {{ ref('kpi_revenue_forecast_daily') }})

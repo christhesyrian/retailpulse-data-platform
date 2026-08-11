@@ -26,8 +26,8 @@
 -- each number so the dashboard can be honest about it.
 with anchors as (
     select
-        cast(date_trunc('week', current_date) as date) as this_week_start,
-        cast({{ add_days("date_trunc('week', current_date)", -56) }} as date) as window_start
+        cast({{ date_trunc_to('week', 'current_date') }} as date) as this_week_start,
+        cast({{ add_days(date_trunc_to('week', 'current_date'), -56) }} as date) as window_start
 ),
 
 -- Every complete ISO week in the fit window, sales or not: the 8 week-starts
@@ -73,8 +73,8 @@ fit as (
     select
         variation_id,
         max(item_name) as item_name,
-        regr_slope(units_sold, wk_idx) as slope,
-        regr_intercept(units_sold, wk_idx) as intercept,
+        {{ regr_slope_of('units_sold', 'wk_idx') }} as slope,
+        {{ regr_intercept_of('units_sold', 'wk_idx') }} as intercept,
         max(wk_idx) as last_idx,
         avg(units_sold) as avg_units,
         count(*) as weeks_of_history

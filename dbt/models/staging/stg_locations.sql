@@ -7,5 +7,5 @@ select
     country,
     business_name,
     merchant_id,
-    try_cast(created_at as timestamp) as created_at
+    {{ try_cast_as('created_at', 'timestamp') }} as created_at
 from {{ source('silver', 'locations') }}

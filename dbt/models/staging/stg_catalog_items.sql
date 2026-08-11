@@ -9,5 +9,5 @@ select
     currency,
     sku,
     is_deleted,
-    try_cast(updated_at as timestamp) as updated_at
+    {{ try_cast_as('updated_at', 'timestamp') }} as updated_at
 from {{ source('silver', 'catalog_items') }}

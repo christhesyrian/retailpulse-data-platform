@@ -89,13 +89,20 @@
   Difference between two dates/timestamps in whole units of `part`.
 
   Three spellings, three signatures:
-    DuckDB/Postgres  date_diff('day', start, end)   -> end - start
-    Snowflake        datediff(day, start, end)      -> end - start, no underscore
-    BigQuery         date_diff(end, start, DAY)     -> arguments reversed
+    DuckDB/Postgres  date_diff('day', start, end)       -> end - start
+    Snowflake        datediff(day, start, end)          -> end - start, no underscore
+    BigQuery         datetime_diff(end, start, DAY)     -> arguments reversed
 
   The BigQuery ordering is the trap: it compiles fine and returns the negative
   of what every other adapter returns, so the failure is a sign flip in a
   number that still looks plausible rather than an error.
+
+  BigQuery also splits the function by operand type — DATE_DIFF takes two
+  DATEs and nothing else, so passing it the TIMESTAMP and DATETIME that the
+  local-time check compares fails with "No matching signature". Only BigQuery
+  cares; both callers here pass whatever the column happens to be, so the
+  BigQuery branch normalises to DATETIME and uses the one function that then
+  covers every part this project asks for, from hours to weeks.
 -#}
 {% macro date_diff_in(part, start_date, end_date) %}
   {{ return(adapter.dispatch('date_diff_in', 'retailpulse')(part, start_date, end_date)) }}
@@ -110,7 +117,12 @@
 {% endmacro %}
 
 {% macro bigquery__date_diff_in(part, start_date, end_date) %}
-    date_diff({{ end_date }}, {{ start_date }}, {{ part }})
+    {#- Casting a TIMESTAMP to DATETIME renders it in UTC, which is what the
+        local-time check wants: closed_at is UTC and closed_at_local is already
+        wall clock, so the difference is the location's real offset. A DATE
+        casts to midnight, leaving whole-day and whole-week answers unchanged. -#}
+    datetime_diff(
+        cast({{ end_date }} as datetime), cast({{ start_date }} as datetime), {{ part }})
 {% endmacro %}
 
 
@@ -306,4 +318,172 @@ where n <= {{ high }}
 select 0 as n union all select 1 union all select 2 union all select 3 union all
 select 4 union all select 5 union all select 6 union all select 7 union all
 select 8 union all select 9
+{%- endmacro %}
+
+
+{#-
+  Cast, yielding NULL instead of an error when the value will not convert.
+
+  The Silver layer arrives with types that differ by warehouse — DuckDB's
+  auto-detected CSV columns are all VARCHAR, a header-only optional input has
+  no rows to infer from at all — so the staging layer converts defensively
+  rather than trusting what it is handed. A hard `cast` there turns one
+  malformed row from Square into a failed build.
+
+  DuckDB and Snowflake both spell this `try_cast`. BigQuery has the same
+  operation under a different name and fails with a bare "Function not found:
+  try_cast", which is at least unambiguous.
+-#}
+{% macro try_cast_as(expression, type) %}
+  {{ return(adapter.dispatch('try_cast_as', 'retailpulse')(expression, type)) }}
+{% endmacro %}
+
+{% macro default__try_cast_as(expression, type) -%}
+try_cast({{ expression }} as {{ type }})
+{%- endmacro %}
+
+{% macro bigquery__try_cast_as(expression, type) -%}
+safe_cast({{ expression }} as {{ type }})
+{%- endmacro %}
+
+
+{#-
+  A fixed-point decimal type, for use inside a cast.
+
+  BigQuery has the type but will not accept a precision and scale in a CAST —
+  "Parameterized types are not allowed in CAST expressions" — so it gets bare
+  NUMERIC, which is fixed at precision 38, scale 9 and therefore contains
+  anything the other two are asked for here.
+
+  Bare `numeric` is not a portable substitute on its own: DuckDB reads an
+  unparameterized NUMERIC as DECIMAL(18, 3), which would quietly drop the
+  fourth decimal place off a Square line-item quantity.
+-#}
+{% macro decimal_type(precision, scale) %}
+  {{ return(adapter.dispatch('decimal_type', 'retailpulse')(precision, scale)) }}
+{% endmacro %}
+
+{% macro default__decimal_type(precision, scale) -%}
+decimal({{ precision }}, {{ scale }})
+{%- endmacro %}
+
+{% macro bigquery__decimal_type(precision, scale) -%}
+numeric
+{%- endmacro %}
+
+
+{#-
+  The warehouse's variable-length string type, for use inside a cast.
+
+  DuckDB and Snowflake both accept `varchar`. BigQuery's type is `STRING` and
+  it does not recognise the word at all ("Type not found: varchar"), which is
+  a clear enough error but appears once per cast across the test suite.
+-#}
+{% macro string_type() %}
+  {{ return(adapter.dispatch('string_type', 'retailpulse')()) }}
+{% endmacro %}
+
+{% macro default__string_type() -%}
+varchar
+{%- endmacro %}
+
+{% macro bigquery__string_type() -%}
+string
+{%- endmacro %}
+
+
+{#-
+  Truncate a date to the start of its `part`.
+
+  Two disagreements at once, and the second is the one that matters.
+
+  Syntax: BigQuery reverses the arguments, and says so plainly — "A valid date
+  part name is required but found sale_date".
+
+  Semantics: BigQuery's WEEK begins on **Sunday**, while DuckDB and Snowflake
+  both begin it on Monday. That is a silent one-day shift in every weekly
+  bucket in the project — item weekly sales, the forecast's fit window,
+  complete-week coverage — and it would not fail anything. `WEEK(MONDAY)` is
+  the spelling that makes BigQuery agree with the other two, and agreeing
+  matters because `day_of_week_iso` and `is_weekend` are already Monday-based.
+-#}
+{% macro date_trunc_to(part, date_expr) %}
+  {{ return(adapter.dispatch('date_trunc_to', 'retailpulse')(part, date_expr)) }}
+{% endmacro %}
+
+{% macro default__date_trunc_to(part, date_expr) -%}
+date_trunc('{{ part }}', {{ date_expr }})
+{%- endmacro %}
+
+{% macro bigquery__date_trunc_to(part, date_expr) -%}
+date_trunc({{ date_expr }}, {% if part == 'week' %}week(monday){% else %}{{ part }}{% endif %})
+{%- endmacro %}
+
+
+{#-
+  Ordinary least squares over an aggregate: the slope and intercept of the line
+  fitted through (x, y).
+
+  DuckDB and Snowflake both provide regr_slope/regr_intercept. BigQuery has no
+  regression aggregates at all ("Function not found: regr_slope"), but it does
+  have the pieces they are defined in terms of, so the fit is the same fit
+  rather than a different method:
+
+      slope     = covar_pop(y, x) / var_pop(x)
+      intercept = avg(y) - slope * avg(x)
+
+  SAFE_DIVIDE, not `/`: a series with a single point has zero variance in x and
+  no line through it. BigQuery raises on division by zero, so the guard also
+  makes it return NULL there — which is what Snowflake returns, and close
+  enough to DuckDB's NaN that `is_nan` plus the existing `is not null` check
+  covers all three. See kpi_item_forecast for why that distinction is
+  load-bearing rather than pedantic.
+-#}
+{% macro regr_slope_of(y_expr, x_expr) %}
+  {{ return(adapter.dispatch('regr_slope_of', 'retailpulse')(y_expr, x_expr)) }}
+{% endmacro %}
+
+{% macro default__regr_slope_of(y_expr, x_expr) -%}
+regr_slope({{ y_expr }}, {{ x_expr }})
+{%- endmacro %}
+
+{% macro bigquery__regr_slope_of(y_expr, x_expr) -%}
+safe_divide(covar_pop({{ y_expr }}, {{ x_expr }}), var_pop({{ x_expr }}))
+{%- endmacro %}
+
+
+{% macro regr_intercept_of(y_expr, x_expr) %}
+  {{ return(adapter.dispatch('regr_intercept_of', 'retailpulse')(y_expr, x_expr)) }}
+{% endmacro %}
+
+{% macro default__regr_intercept_of(y_expr, x_expr) -%}
+regr_intercept({{ y_expr }}, {{ x_expr }})
+{%- endmacro %}
+
+{% macro bigquery__regr_intercept_of(y_expr, x_expr) -%}
+(avg({{ y_expr }}) - {{ bigquery__regr_slope_of(y_expr, x_expr) }} * avg({{ x_expr }}))
+{%- endmacro %}
+
+
+{#-
+  ISO week of year: weeks start Monday, week 1 contains the first Thursday.
+
+  Another one that compiles everywhere and disagrees. `extract(week from ...)`
+  is ISO on DuckDB and on Snowflake under its default WEEK_OF_YEAR_POLICY, but
+  BigQuery's WEEK counts from the first Sunday of the year, so it returns 29
+  for 2025-07-26 where the other two return the correct 30. Off by one, in a
+  column nothing validates, for a little under half the days in any given year.
+
+  BigQuery does have the ISO variant, just not under the same name.
+-#}
+{% macro week_of_year(date_expr) %}
+  {{ return(adapter.dispatch('week_of_year', 'retailpulse')(date_expr)) }}
+{% endmacro %}
+
+{% macro default__week_of_year(date_expr) -%}
+extract(week from {{ date_expr }})
+{%- endmacro %}
+
+{% macro bigquery__week_of_year(date_expr) -%}
+extract(isoweek from {{ date_expr }})
 {%- endmacro %}

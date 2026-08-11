@@ -64,6 +64,12 @@
 {{ anchor.database }}.{{ anchor.schema }}.{{ name }}
 {%- endmacro %}
 
+{% macro bigquery__range_relation(name, anchor) -%}
+{#- Backticked as one path: GCP project ids routinely contain hyphens, which
+    are otherwise parsed as subtraction. -#}
+`{{ anchor.database }}.{{ anchor.schema }}.{{ name }}`
+{%- endmacro %}
+
 
 {#-
   Publish one parameterized relation. Both forms take two DATE arguments and
@@ -82,6 +88,17 @@ create or replace macro {{ range_relation(name, this) }}(p_start, p_end) as tabl
 create or replace function {{ range_relation(name, this) }}(p_start date, p_end date)
 returns table ({{ returns }})
 as $${{ body }}$$;
+{% endmacro %}
+
+{% macro bigquery__publish_range_relation(name, returns, body) %}
+{#- BigQuery's table function is the easiest of the three: it infers the
+    returned columns from the body, so the declared signature is not needed
+    here (it stays declared for Snowflake, which does need it). -#}
+create or replace table function {{ range_relation(name, this) }}(
+    p_start date, p_end date)
+as (
+{{ body }}
+);
 {% endmacro %}
 
 
@@ -110,6 +127,10 @@ rp_window(p_start, p_end)
 
 {% macro snowflake__rp_window_call(anchor) -%}
 ({{ rp_window_body(anchor) }})
+{%- endmacro %}
+
+{% macro bigquery__rp_window_call(anchor) -%}
+{{ range_relation('rp_window', anchor) }}(p_start, p_end)
 {%- endmacro %}
 
 
@@ -154,6 +175,10 @@ order by {{ expr }}
 table({{ range_relation(name, ref('rp_range_api')) }}({{ start_expr }}, {{ end_expr }}))
 {%- endmacro %}
 
+{% macro bigquery__range_call(name, start_expr, end_expr) -%}
+{{ range_relation(name, ref('rp_range_api')) }}({{ start_expr }}, {{ end_expr }})
+{%- endmacro %}
+
 
 {#-
   The five canonical windows, read out of dim_period at compile time.
@@ -192,7 +217,7 @@ table({{ range_relation(name, ref('rp_range_api')) }}({{ start_expr }}, {{ end_e
 {% macro range_over_periods(name, windows, with_period_days=false) -%}
 {%- for w in windows %}
 {% if not loop.first %}union all {% endif %}select
-    cast('{{ w[0] }}' as varchar) as period_label,
+    cast('{{ w[0] }}' as {{ string_type() }}) as period_label,
     {%- if with_period_days %}
     cast({{ 'null' if w[3] is none else w[3] }} as integer) as period_days,
     {%- endif %}
@@ -239,9 +264,14 @@ with bounds as (
     select
         cast(p_start as date) as period_start,
         cast(p_end as date) as period_end,
-        -- Cast to INTEGER: date subtraction yields BIGINT, and DuckDB has no
-        -- DATE - BIGINT operator, so the window arithmetic below fails to bind.
-        cast(cast(p_end as date) - cast(p_start as date) + 1 as integer) as period_days
+        -- Subtracting one date from another is the one piece of arithmetic
+        -- here with no portable operator: DuckDB yields BIGINT and then has no
+        -- DATE - BIGINT operator to consume it, and BigQuery yields an
+        -- INTERVAL, which will not add to an integer. Shifting a date BY an
+        -- integer is fine everywhere; measuring the gap between two needs the
+        -- macro. Cast to INTEGER so the window arithmetic below still binds.
+        cast({{ date_diff_in('day', 'cast(p_start as date)', 'cast(p_end as date)') }} + 1
+             as integer) as period_days
 ),
 history as (
     select coalesce(min(sale_date), current_date) as first_sale_date
@@ -448,23 +478,36 @@ left join prior_rows pr on pr.category_name = c.category_name
 
 {% macro rp_weekday_range_body(anchor) %}
 {%- set fact_order_line = ref('fact_order_line') -%}
-with w as (select * from {{ rp_window_call(anchor) }})
+with w as (select * from {{ rp_window_call(anchor) }}),
+-- The weekday fields are projected first and aggregated second, rather than
+-- repeating the expression in both the SELECT list and the GROUP BY. DuckDB
+-- and Snowflake accept the repeated form and let `... in (6, 7)` ride along
+-- ungrouped; BigQuery rejects it ("references l.sale_date which is neither
+-- grouped nor aggregated"), and is right to.
+lines as (
+    select
+        -- Derived from sale_date, which is already the store's local day.
+        -- Reading the weekday off the UTC timestamp is the bug that put
+        -- Friday evening's trade on Saturday for a year.
+        {{ day_of_week_iso('l.sale_date') }} as day_of_week,
+        {{ day_name('l.sale_date') }} as day_name,
+        l.square_order_id,
+        l.net_sales_cents
+    from w cross join {{ fact_order_line }} l
+    where l.sale_date is not null
+      and l.sale_date between w.period_start and w.period_end
+)
 select
-    -- Derived from sale_date, which is already the store's local day. Reading
-    -- the weekday off the UTC timestamp is the bug that put Friday evening's
-    -- trade on Saturday for a year.
-    {{ day_of_week_iso('l.sale_date') }} as day_of_week,
-    {{ day_name('l.sale_date') }} as day_name,
-    {{ day_of_week_iso('l.sale_date') }} in (6, 7) as is_weekend,
-    count(distinct l.square_order_id) as orders,
-    sum(l.net_sales_cents) as net_sales_cents,
-    case when count(distinct l.square_order_id) > 0
-         then round(sum(l.net_sales_cents) * 1.0 / count(distinct l.square_order_id))
+    day_of_week,
+    day_name,
+    day_of_week in (6, 7) as is_weekend,
+    count(distinct square_order_id) as orders,
+    sum(net_sales_cents) as net_sales_cents,
+    case when count(distinct square_order_id) > 0
+         then round(sum(net_sales_cents) * 1.0 / count(distinct square_order_id))
     end as avg_order_value_cents
-from w cross join {{ fact_order_line }} l
-where l.sale_date is not null
-  and l.sale_date between w.period_start and w.period_end
-group by {{ day_of_week_iso('l.sale_date') }}, {{ day_name('l.sale_date') }}
+from lines
+group by day_of_week, day_name
 {{ range_order_by('day_of_week') }}
 {% endmacro %}
 

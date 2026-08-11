@@ -4,5 +4,5 @@ select
     location_id,
     state,
     quantity,
-    try_cast(calculated_at as timestamp) as calculated_at
+    {{ try_cast_as('calculated_at', 'timestamp') }} as calculated_at
 from {{ source('silver', 'inventory_snapshots') }}

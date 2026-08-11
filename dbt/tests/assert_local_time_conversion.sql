@@ -43,8 +43,8 @@ lines as (
 
 select
     'offset_or_date_mismatch' as failure,
-    cast(closed_at as varchar) as closed_at,
-    cast(sale_date as varchar) as sale_date
+    cast(closed_at as {{ string_type() }}) as closed_at,
+    cast(sale_date as {{ string_type() }}) as sale_date
 from lines
 where sale_date <> cast(closed_at_local as date)
    or {{ date_diff_in('hour', 'closed_at_local', 'closed_at') }} not between 1 and 23
@@ -53,6 +53,6 @@ union all
 
 select
     'nullability_mismatch' as failure,
-    cast(closed_at as varchar),
-    cast(sale_date as varchar)
+    cast(closed_at as {{ string_type() }}),
+    cast(sale_date as {{ string_type() }})
 from nullability

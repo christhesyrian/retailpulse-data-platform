@@ -38,7 +38,13 @@ models:
           - not_null
           - accepted_values:
               arguments:
+                # quote: false because these are integers. dbt quotes the
+                # values by default, and while DuckDB and Snowflake coerce
+                # INT IN (STRING...) happily, BigQuery refuses: "No matching
+                # signature for operator IN for argument types INT64 and
+                # {STRING}".
                 values: [1, 2, 3, 4, 5, 6, 7]
+                quote: false
 
   - name: kpi_sales_by_hour
     description: Sales by hour of day (0..23, UTC), per period.

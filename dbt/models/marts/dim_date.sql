@@ -36,6 +36,6 @@ select
     extract(day from date_day) as day_of_month,
     {{ day_of_week_iso('date_day') }} as day_of_week,   -- 1 = Monday ... 7 = Sunday
     {{ day_name('date_day') }} as day_name,
-    cast(extract(week from date_day) as integer) as week_of_year,
+    cast({{ week_of_year('date_day') }} as integer) as week_of_year,
     {{ day_of_week_iso('date_day') }} in (6, 7) as is_weekend
 from spine
