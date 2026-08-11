@@ -23,6 +23,8 @@ from typing import Any
 
 import duckdb
 
+from retailpulse import lake
+
 # (column name, DuckDB type) — explicit typing for the Parquet schema.
 LOCATIONS_SCHEMA = [
     ("location_id", "VARCHAR"), ("name", "VARCHAR"), ("status", "VARCHAR"),
@@ -290,32 +292,45 @@ def build_silver_inventory(bronze_root: Path) -> list[dict[str, Any]]:
 
 
 def write_silver_parquet(
-    rows: list[dict[str, Any]], path: Path, schema: list[tuple[str, str]]
-) -> Path:
+    rows: list[dict[str, Any]], path: str | Path, schema: list[tuple[str, str]]
+) -> str | Path:
     """Write typed rows to a Parquet file via an in-memory DuckDB table.
 
     DuckDB has native Parquet support, so this needs no separate Arrow/
     pandas dependency — the same `duckdb` package used as the dbt target
     writes the lake files dbt reads.
+
+    `path` may be a local path or an `s3://` URI; DuckDB's COPY writes either,
+    so the destination is the only thing that differs. See retailpulse.lake.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    to_s3 = lake.is_s3(path)
+    if not to_s3:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+
     column_names = [name for name, _ in schema]
     con = duckdb.connect(":memory:")
     try:
+        if to_s3:
+            lake.configure_duckdb_for_s3(con)
         col_defs = ", ".join(f'"{name}" {dtype}' for name, dtype in schema)
         con.execute(f"CREATE TABLE silver ({col_defs})")
         if rows:
             placeholders = ", ".join(["?"] * len(schema))
             values = [tuple(row.get(name) for name in column_names) for row in rows]
             con.executemany(f"INSERT INTO silver VALUES ({placeholders})", values)
-        con.execute(f"COPY silver TO '{path.as_posix()}' (FORMAT PARQUET)")
+        con.execute(f"COPY silver TO '{lake.to_sql_literal(path)}' (FORMAT PARQUET)")
     finally:
         con.close()
     return path
 
 
-def run_silver_transform(bronze_root: Path, silver_root: Path) -> dict[str, int]:
-    """Rebuild every Silver table from Bronze and return row counts per table."""
+def run_silver_transform(bronze_root: Path, silver_root: str | Path) -> dict[str, int]:
+    """Rebuild every Silver table from Bronze and return row counts per table.
+
+    `silver_root` is a local directory or an `s3://bucket/prefix`. Bronze stays
+    local either way — it is raw vendor JSON, and the layer worth keeping
+    cheap.
+    """
     tables: dict[str, tuple[list[dict[str, Any]], list[tuple[str, str]]]] = {
         "locations": (build_silver_locations(bronze_root), LOCATIONS_SCHEMA),
         "catalog_items": (build_silver_catalog_items(bronze_root), CATALOG_ITEMS_SCHEMA),
@@ -325,6 +340,6 @@ def run_silver_transform(bronze_root: Path, silver_root: Path) -> dict[str, int]
     }
     counts: dict[str, int] = {}
     for name, (rows, schema) in tables.items():
-        write_silver_parquet(rows, silver_root / f"{name}.parquet", schema)
+        write_silver_parquet(rows, lake.join(silver_root, f"{name}.parquet"), schema)
         counts[name] = len(rows)
     return counts

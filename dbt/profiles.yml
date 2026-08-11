@@ -25,6 +25,41 @@ retailpulse:
       path: "{{ env_var('RETAILPULSE_WAREHOUSE_PATH') }}"
       threads: 4
 
+    # Same DuckDB warehouse as `dev`, but the Silver lake is read from S3 over
+    # httpfs instead of off local disk — the object-store-plus-query-engine
+    # shape of a lakehouse, without a cluster. Only the source location
+    # changes; the 33 models are the same files.
+    #
+    #   RETAILPULSE_SILVER_DIR=s3://your-bucket/silver \
+    #   RETAILPULSE_DBT_TARGET=dev_s3 dbt build --project-dir dbt --profiles-dir dbt
+    #
+    # It is a separate target rather than a conditional inside `dev` because
+    # dbt renders only `{{ }}` expressions in this file — a `{% if %}` block
+    # makes it fail to parse its own profile. Which is the better outcome
+    # anyway: both configurations are visible instead of one being implied.
+    #
+    # httpfs is listed here and not on `dev` on purpose. Loading it downloads
+    # an extension on first use, and a local build should stay offline.
+    dev_s3:
+      type: duckdb
+      path: "{{ env_var('RETAILPULSE_WAREHOUSE_PATH') }}"
+      threads: 4
+      extensions:
+        - httpfs
+      secrets:
+        - type: s3
+          region: "{{ env_var('AWS_REGION', env_var('AWS_DEFAULT_REGION', 'us-east-1')) }}"
+          key_id: "{{ env_var('AWS_ACCESS_KEY_ID', '') }}"
+          secret: "{{ env_var('AWS_SECRET_ACCESS_KEY', '') }}"
+          # Defaults to the real AWS endpoint, so an unset override is simply
+          # S3 proper. Point AWS_ENDPOINT_URL_S3 at MinIO or LocalStack to
+          # develop against an S3-compatible store instead — those need
+          # path-style addressing, having no per-bucket DNS for the
+          # virtual-host form to resolve.
+          endpoint: "{{ env_var('AWS_ENDPOINT_URL_S3', 's3.amazonaws.com').split('://')[-1].rstrip('/') }}"
+          url_style: "{{ 'path' if env_var('AWS_ENDPOINT_URL_S3', '') else 'vhost' }}"
+          use_ssl: "{{ 'false' if env_var('AWS_ENDPOINT_URL_S3', '').startswith('http://') else 'true' }}"
+
     prod:
       type: bigquery
       method: service-account

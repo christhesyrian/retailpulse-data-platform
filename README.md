@@ -55,6 +55,8 @@ The pipeline runs as a **Dagster asset graph** — 42 assets, two scheduled jobs
 
 **Re-running is safe.** Bronze is append-only and immutable: each page is written to a partitioned path with the run id in the filename, and the writer refuses to overwrite. Silver then deduplicates to the latest version of each record, which makes the Silver and Gold rebuild **idempotent** — the warehouse is a pure function of Bronze, so running the pipeline twice produces the same warehouse rather than double-counting. That property is what makes a **backfill** of any store-day range a safe operation rather than a careful one.
 
+**The Silver lake can live on S3.** Point `RETAILPULSE_SILVER_DIR` at an `s3://` prefix and the Parquet files are written to and read from object storage over DuckDB's `httpfs` extension — object store plus query engine, which is the shape of a lakehouse without the cluster. The contents are byte-identical either way and the models never learn where the files came from, because a source's `external_location` is just a string. See [Running against S3](#running-against-s3).
+
 ```bash
 make dagster   # asset graph, run history and backfills at localhost:3000
 ```
@@ -181,6 +183,36 @@ RETAILPULSE_DBT_TARGET=snowflake dbt build --project-dir dbt --profiles-dir dbt
 
 The models are portable; the *ingestion* is not, which is why each cloud target has its own loader. `external_location` is a dbt-duckdb feature — every other adapter needs Silver physically loaded. That is the honest shape of a warehouse migration.
 
+### Running against S3
+
+Provision the bucket and a least-privilege IAM user with Terraform, then point the pipeline at it:
+
+```bash
+cd infra/aws && terraform init && terraform apply -var bucket_name=<globally-unique-name>
+```
+
+```bash
+export RETAILPULSE_SILVER_DIR="s3://<your-bucket>/silver"   # terraform output silver_dir
+export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... AWS_REGION=us-east-1
+
+retailpulse transform-silver                                 # writes Parquet to S3
+RETAILPULSE_DBT_TARGET=dev_s3 dbt build --project-dir dbt --profiles-dir dbt
+```
+
+The `dev_s3` target is the same DuckDB warehouse as `dev` with `httpfs` loaded and an S3 secret — only the source location differs. Terraform deliberately creates **no access key**: that would write the secret into local state in plaintext, so the IAM user is created and you mint a key for it yourself, or attach the policy to a role and skip long-lived keys entirely.
+
+**You don't need an AWS account to exercise this path.** Set `AWS_ENDPOINT_URL_S3` to any S3-compatible endpoint and it works unchanged — which is how it was developed and verified, against MinIO in Docker:
+
+```bash
+docker run -d --name minio -p 9000:9000 \
+  -e MINIO_ROOT_USER=retailpulse -e MINIO_ROOT_PASSWORD=retailpulse-local-only \
+  minio/minio server /data
+export AWS_ENDPOINT_URL_S3=http://localhost:9000 \
+       AWS_ACCESS_KEY_ID=retailpulse AWS_SECRET_ACCESS_KEY=retailpulse-local-only
+```
+
+All 126 nodes build green with Silver read from object storage.
+
 ## Technologies
 
 **Languages & modelling** — Python 3.11, SQL, dimensional modelling (star schema, conformed dimensions, surrogate keys, declared grain), ELT, medallion architecture
@@ -189,11 +221,11 @@ The models are portable; the *ingestion* is not, which is why each cloud target 
 
 **Orchestration** — [Dagster](https://dagster.io/) + dagster-dbt (assets, daily partitions, backfills, asset checks, schedules) and a parallel [Airflow](https://airflow.apache.org/) DAG for comparison
 
-**Platform** — Docker & Compose, [Terraform](https://www.terraform.io/) on GCP (Cloud Storage, BigQuery dataset, service account, IAM), GitHub Actions CI/CD
+**Storage & platform** — Parquet on local disk or **AWS S3** (read by DuckDB over `httpfs`; MinIO-compatible for local development), Docker & Compose, [Terraform](https://www.terraform.io/) for both clouds — AWS (S3 bucket, versioning, encryption, lifecycle rules, least-privilege IAM policy and user) and GCP (Cloud Storage, BigQuery dataset, service account, IAM) — GitHub Actions CI/CD
 
 **Data quality** — dbt tests and contracts, custom singular tests for business invariants, Dagster asset checks, freshness SLA, `scripts/compare_warehouses.py`
 
-**Ingestion & presentation** — [httpx](https://www.python-httpx.org/) with bounded retry/backoff against the Square REST API `2026-07-15`, [pydantic](https://docs.pydantic.dev/) + pydantic-settings for typed secret-aware config, Parquet, [Streamlit](https://streamlit.io/) + Altair, pytest + ruff
+**Ingestion & presentation** — [httpx](https://www.python-httpx.org/) with bounded retry/backoff against the Square REST API `2026-07-15`, [pydantic](https://docs.pydantic.dev/) + pydantic-settings for typed secret-aware config, [Streamlit](https://streamlit.io/) + Altair, pytest + ruff
 
 **Why DuckDB as the default:** it is a free, embedded, columnar OLAP engine, and reading Parquet directly off disk is the same pattern a lakehouse uses with S3 and Iceberg, minus the account. Anyone can clone this repo and get a working warehouse in one command — which is also why the Snowflake and BigQuery targets exist: to show the choice is not a constraint.
 

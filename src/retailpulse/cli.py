@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import uuid
+from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -162,7 +163,12 @@ def main() -> None:
     settings = load_settings()
 
     if args.command == "transform-silver":
-        silver_root = settings.raw_data_dir.parent / "silver"
+        # RETAILPULSE_SILVER_DIR is what dbt's sources resolve, so the writer
+        # has to honour it too or the two ends of Silver drift apart. It also
+        # carries the s3:// form, which has no sibling-of-Bronze default.
+        silver_root: str | Path = os.environ.get(
+            "RETAILPULSE_SILVER_DIR", ""
+        ) or settings.raw_data_dir.parent / "silver"
         counts = run_silver_transform(settings.raw_data_dir, silver_root)
         print("Silver transform complete: " + ", ".join(f"{k}={v}" for k, v in counts.items()))
         return
