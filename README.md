@@ -1,199 +1,177 @@
-# RetailPulse Data Platform
+# RetailPulse
 
-A production-style data engineering portfolio project built from a real, operating liquor store's Square point-of-sale data.
+**A data platform over a real, operating liquor store's Square point-of-sale data** — extraction, a tested warehouse, orchestration, and a dashboard that answers the questions the owner actually asks.
 
-## Business problem
+[![CI](https://github.com/christhesyrian/retailpulse-data-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/christhesyrian/retailpulse-data-platform/actions/workflows/ci.yml)
 
-The store runs entirely on Square, which means daily sales, catalog, payment, and (later) inventory data already exists — but it's locked inside Square's dashboard and reports. There's no reproducible, queryable history for answering questions like "which products are slow-moving," "how much revenue do discounts and refunds actually cost us," or "how does this week compare to last week." RetailPulse extracts that data into an owned pipeline so those questions can be answered with SQL instead of manual report-clicking.
+![The RetailPulse dashboard: KPI tiles with period-over-period change, a daily sales trend with a 7-day average, category mix, and a popular-times grid](docs/img/dashboard-overview.png)
 
-It's built against a real store on purpose: the data shapes, edge cases, and volume are the ones a real commerce API produces, not a synthetic tutorial dataset. All development and testing happens against the **Square Sandbox** — see [Data privacy strategy](#data-privacy-strategy) below.
+*The hosted demo runs on a generated fixture — see [Try it](#try-it).*
 
-## Business questions this project answers
+## What it does, concretely
 
-**Sales performance** — daily/weekly/monthly trends, best hours and days, average transaction value, items per basket, weekday vs. weekend, period-over-period comparisons.
+A year of the store's trade lands in a tested warehouse, and the questions that used to need clicking through Square's reports become SQL:
 
-**Product performance** — top sellers, category net sales, slow movers, trending items, frequently-bought-together pairs, seasonality.
+- **Peak trading hour is 16:00**, not the evening the owner assumed. That number was wrong for a year — see [the local-time bug](#the-bug-worth-reading-about).
+- **Revenue forecast for tomorrow, the next week and the next month**, which backtests itself: on a 28-day holdout it is typically **within 11.0% of actual takings**, against **16.2%** for a flat daily average. Both figures are published in the dashboard, because a forecast that doesn't say how wrong it usually is invites you to trust it completely.
+- **Per-item units and revenue** for any window, each against the equivalent window before it, with a 4-week projection per item.
 
-**Payments and adjustments** — payment method mix, card vs. cash vs. other, revenue lost to discounts and refunds, Square processing fees, unusual refund/discount patterns.
+The interesting part is not the charts. It is that **every number on screen comes from a tested warehouse object** — the dashboard computes nothing — and that the whole thing builds identically on three different warehouses.
 
-**Inventory** *(future milestone)* — stockout risk, dead stock, turnover by item/category, days of inventory remaining, reorder recommendations.
+## Try it
 
-**Profitability** *(future milestone, after vendor costs are added)* — gross profit and margin by product/category/vendor, and the financial effect of discounts, refunds, and fees.
+```bash
+git clone https://github.com/christhesyrian/retailpulse-data-platform
+cd retailpulse-data-platform
+make install
+make demo-data     # synthetic Bronze -> Silver -> dbt Gold + KPIs. No Square account needed.
+make dashboard     # http://localhost:8501
+```
 
-> **Note:** Square sales data alone is *revenue*, not *profit*. Net sales and revenue are never described as profit in this project — true profit requires item acquisition costs from vendor invoices or a maintained cost dataset, which is a later milestone.
+No credentials, no cloud account, no Square access. `make demo-data` generates a deterministic fixture describing a fictional store, then runs the real pipeline over it.
+
+> On a fresh clone this is safe. If you have already extracted real data, note that `make demo-data` writes synthetic pages *alongside* whatever is in `data/bronze/` rather than replacing it, and the Silver rebuild then reads both — so point it at an empty tree, or clear Bronze first.
+
+The hosted demo does the same thing on boot: [`streamlit_app.py`](streamlit_app.py) generates the fixture, runs the Bronze→Silver transform, and builds all 33 dbt models and 93 tests before the first page renders — about 15 seconds, once per container. **No real business data is present in this repository or reachable from the demo.**
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    A[Square APIs] --> B[Python Extraction]
+    A[Square APIs] --> B[Python extraction]
     V[Vendor costs CSV] --> E
-    B --> C[Bronze Raw JSON]
-    C --> D[Silver Parquet lake]
-    D --> E[Gold facts & dimensions]
+    B --> C[Bronze: raw JSON]
+    C --> D[Silver: Parquet lake]
+    D --> E[Gold: facts & dimensions]
     E --> K[KPI, item sales & forecast]
     K --> F[Streamlit dashboard]
 ```
 
-The whole pipeline runs as a **Dagster asset graph** — 42 assets, two scheduled
-jobs, and two asset checks — with the dbt project loaded via `dagster-dbt` so all
-30 models appear as individual assets with real lineage rather than one opaque
-"run dbt" step. Orders and payments are partitioned by **store-local day**, so a
-single day is the unit of both scheduling and backfill. See
-[`docs/orchestration.md`](docs/orchestration.md).
+The pipeline runs as a **Dagster asset graph** — 42 assets, two scheduled jobs and two asset checks — with the dbt project loaded through `dagster-dbt`, so all 33 models appear as individual assets with real lineage rather than one opaque "run dbt" step. Orders and payments are partitioned by **store-local day**, so one day is the unit of both scheduling and backfill.
 
 ```bash
 make dagster   # asset graph, run history and backfills at localhost:3000
 ```
 
-| Layer | Status | Description |
+| Layer | Status | Notes |
 |---|---|---|
-| Square APIs | Implemented (read-only) | Locations, Catalog, Orders, Payments, Inventory |
-| Python Extraction | Implemented | Cursor-paginated, retrying, Sandbox by default (explicit opt-in for production) |
-| Bronze Raw JSON | Implemented | Immutable, partitioned, local, Git-ignored |
-| Silver Normalized Tables | Implemented | Deduplicated, flattened Parquet files (the local "lake") rebuilt from Bronze JSON |
-| Gold Fact/Dimension Models | Implemented | `dbt-duckdb` models in `dbt/`, matching `sql/warehouse_schema.sql`'s target grain |
-| KPI + margin + inventory | Implemented | Tested `kpi_*` models; payment reconciliation; gross-margin & inventory-position |
-| Dashboard | Implemented | Streamlit app reading the tested KPI models |
-| Orchestration | Implemented | Dagster asset graph: daily-partitioned ingest, retry policy, freshness + shape asset checks, two schedules |
-| Forecasting | **Not implemented** — future work | Demand forecasting, reorder recommendations |
+| Square APIs | Implemented (read-only) | Locations, catalog, orders, payments, inventory |
+| Extraction | Implemented | Cursor-paginated, bounded retry/backoff, Sandbox by default with an explicit production opt-in |
+| Bronze | Implemented | Immutable, partitioned, local, Git-ignored |
+| Silver | Implemented | Deduplicated, flattened Parquet, rebuilt from Bronze |
+| Gold | Implemented | 33 `dbt` models — dimensions, facts, and the KPI layer |
+| Forecasting | Implemented | Per-item units (4 weeks) and revenue (31 days), both backtested |
+| Dashboard | Implemented | Streamlit, reading only tested models |
+| Orchestration | Implemented | Dagster: daily-partitioned ingest, retries, freshness and timezone asset checks, two schedules |
+| Portability | Implemented | The same models build on DuckDB, Snowflake and BigQuery |
 
-## Current focus: item-level sales analytics and forecasting
+## The parts worth reviewing
 
-The heart of the platform: what each item sells, over time, and what it will sell next.
+If you are assessing this as engineering rather than as a dashboard, these are the four things to look at.
 
-- **Item sales** (`kpi_item_sales`, `kpi_item_weekly_sales`): per-item units and revenue for any period the dashboard offers, each against the equivalent stretch before it, plus a full weekly history — built straight from order line items, so it works against any Square store with **no setup on the merchant's side**.
-- **Forecasting** (`kpi_item_forecast`): projected units per item for the next 4 weeks, from a simple, explainable linear trend over recent weeks (falls back to a running average with little history). The trend is fitted on a **zero-filled** weekly series, so weeks an item didn't sell count against it rather than being dropped — without that, anything intermittent projects far too high. Honest estimates: calendar seasonality is a planned enhancement, not yet modeled.
+### One set of models, three warehouses — and a script that proves it
 
-### Everything is period-aware
+`dbt build` runs green on **DuckDB, Snowflake and BigQuery**: all 126 nodes, same models, same tests. Dialect differences are isolated behind adapter-dispatched macros in [`dbt/macros/portable.sql`](dbt/macros/portable.sql), and the parameterized range API in [`dbt/macros/range_api.sql`](dbt/macros/range_api.sql) publishes one body as a DuckDB table macro, a Snowflake SQL UDTF or a BigQuery table function.
 
-`dim_period` defines the windows the dashboard offers (last 7 / 30 / 90 / 365 days, and all time), each with the equivalent window immediately before it. The KPI models are built at **(period, key)** grain, so switching period in the dashboard selects pre-computed, tested rows rather than triggering any recalculation in the presentation layer.
+The point is what that exercise turns up. A green build on three warehouses only proves the SQL *parses* on each — so [`scripts/compare_warehouses.py`](scripts/compare_warehouses.py) runs the same twelve queries against all three and demands the same answers back:
 
-Two details that keep the comparisons truthful:
+```bash
+python3 scripts/compare_warehouses.py
+```
 
-- Windows anchor on the **most recent day with sales**, not on today. Anchoring on today would drop empty days into the current window whenever the extract is stale and show a false decline.
-- A comparison is **suppressed** (null, rendered as "—") when the extract doesn't fully cover the earlier window. Comparing a 90-day window against two days of prior history reads as +4,659%, which is worse than showing nothing.
+It found a real bug that no build would ever catch: BigQuery's `extract(week from ...)` counts weeks from the first Sunday of the year, so `dim_date.week_of_year` read 29 where the ISO answer is 30, in a column no test asserted. The same class of thing hides in `dayname` ("Monday" on DuckDB, "Mon" on Snowflake) and `date_trunc(x, WEEK)` (Sunday on BigQuery, Monday elsewhere). All of them compile everywhere and mean different things.
 
-### Optional: inventory and vendor costs (only active when you have that data)
+Ten of the twelve checks require exact agreement. Two allow 0.01%, documented in the script: forecast units and backtest error are rounded floating-point regression output, and last-bit differences tip 14 of 8,432 rows across a rounding boundary by exactly one unit each.
 
-M5 added inventory and gross-margin analysis, but both are **optional** and only light up when their source data exists — the pipeline never breaks without them:
+### The bug worth reading about
 
-- **Inventory** (`fact_inventory_snapshot`, `kpi_inventory_position`): read-only Square inventory counts → days-of-inventory + reorder signal. Still built and tested, but **not surfaced in the dashboard**: against the real store, 480 of 1,584 items carried negative on-hand counts (stock that was sold but never recorded as received), which made the reorder signal mostly noise. Reinstating it needs the counts corrected at source first.
-- **Vendor costs → gross margin** (`fact_order_line_margin`, `kpi_margin_by_*`): if you maintain a Git-ignored `data/input/vendor_costs.csv`, the pipeline computes **COGS and gross profit** (`gross_profit = net_sales − COGS`). Margin is only computed where a cost is on file, and coverage is reported — profit is never fabricated from missing costs. No costs file → margin simply shows no coverage.
-- **Production safeguard**: contacting production requires an explicit `RETAILPULSE_ALLOW_PRODUCTION=1` opt-in per command, so a real store can't be hit by accident. See [`docs/production-switch.md`](docs/production-switch.md) for the read-only production-validation guide.
+Square records every sale in UTC. A store in California does its heaviest trade in the evening, which is already the next day in UTC — so reading the date straight off the timestamp put a year of Friday-evening sales on Saturday. **Every total still reconciled.** Daily revenue was right, monthly revenue was right, and the error was invisible until someone noticed the hour-of-day chart peaking at 2am.
 
-### Earlier milestone — M4: KPI models, reconciliation, and dashboard
+Local time is now resolved once, in the fact layer, through the `to_local_time` macro, and [`dbt/tests/assert_local_time_conversion.sql`](dbt/tests/assert_local_time_conversion.sql) asserts three independent things about it — including that the offset is a whole number of hours between 1 and 23, so a conversion that silently no-ops fails the build.
 
-- **`dim_date`** and tested **KPI models** (`dbt/models/marts/kpi/`): daily sales, sales by category, by weekday, by hour, payment-method mix, and a single-row headline summary. Metric definitions live in version-controlled, tested SQL — not in the dashboard.
-- **Reconciliation** (`rpt_order_payment_reconciliation` + a dbt test): every order's recorded total (net sales + tax) is asserted to equal what was collected in payments, order by order. This is *internal* reconciliation (the pipeline agrees with itself); reconciling against Square's own Reporting API totals is production-only future work (documented in [`docs/architecture.md`](docs/architecture.md)).
-- **Design system** (`.streamlit/config.toml` + `dashboard/design.py`): the palette, type scale, radii and chart theme live in one place. Colours are a validated data-viz palette — categorical slot 1 (blue) and slot 2 (orange) on warm near-white / near-black surfaces — and both modes clear all six checks (lightness band, chroma floor, colour-vision-deficiency separation, normal-vision floor, contrast) against their own surface. The bulk goes through Streamlit's own theming API rather than CSS injected at generated class names, so it survives upgrades; `design.py` carries only what that API can't express, plus the matching Altair theme so the charts belong to the same system as the chrome.
-- **Streamlit dashboard** (`dashboard/app.py`): a period control driving four tabs — Overview (KPI tiles with change vs. the previous equivalent window, daily sales trend, category and time-of-day breakdowns), Items (searchable, filterable item table with per-item history and projection), Forecast, and Back office (reconciliation, payment mix). It runs no business logic of its own — every number comes from a tested `kpi_*` model, so the dashboard and warehouse can't disagree. Search, filtering, sorting and top-N choose which model rows to show; they never compute a figure.
+That is the theme of the test suite generally: the failures worth guarding against are the ones that still produce a plausible number.
 
-**Why DuckDB instead of a hosted warehouse:** DuckDB is a free, embedded, columnar OLAP database — no server, no account, no cost — and `dbt-duckdb` is an officially supported adapter. Reading Parquet directly off disk as the source layer is the same pattern real lakehouses use with S3 + Delta/Iceberg, just running locally. This keeps the warehouse layer genuinely representative of the modern data stack without requiring cloud credentials for a portfolio project.
+### Custom date ranges that cannot drift from the presets
+
+The precomputed `kpi_*` models are built at `(period, key)` grain, which is exactly what makes an arbitrary window impossible — there is no row for "March 3rd to April 11th". Rather than move that aggregation into the dashboard, the same SQL is published as parameterized warehouse relations taking `(start, end)`.
+
+That creates two ways to compute the same KPI, so [`assert_range_macros_match_periods`](dbt/tests/assert_range_macros_match_periods.sql) requires them to agree exactly on all five canonical windows. It caught 168 real mismatches the first time it ran, and it runs on every warehouse.
+
+### A forecast that reports its own error
+
+`kpi_revenue_forecast` holds out the most recent 28 days, fits on everything before them, predicts those days and publishes the weighted absolute percentage error — next to the same figure for a naive flat average. If the model isn't beating the baseline, the dashboard says so.
+
+WAPE rather than MAPE, deliberately: MAPE divides by each day's actual, so one partially-extracted day with $24 of sales against a $3,400 forecast is a 14,000% error on its own. It dragged the reported figure to 464% while every ordinary day was within a few percent.
+
+## Data privacy
+
+This repository is public. The store's data is not, and the separation is enforced rather than promised.
+
+- **Nothing derived from the real store is committed.** `data/` is Git-ignored except for `.gitkeep`; the Bronze layer is ~800MB of real business data that lives only on the owner's machine.
+- **`.env` holds the Square token**, is Git-ignored, and is never logged or printed. [`scripts/security_check.py`](scripts/security_check.py) scans the tree for secret-shaped patterns and runs in CI on every push.
+- **CI has no credentials at all.** It generates a synthetic fixture and runs the entire pipeline over it — Bronze → Silver → dbt build → dashboard smoke test → Dagster validation.
+- **The hosted demo is synthetic**, generated at boot. It has no Square token and no path to one.
+- **Development uses the Square Sandbox by default.** Reaching the real store requires an explicit `RETAILPULSE_ALLOW_PRODUCTION=1` per command, and every production call the project makes is read-only — see [`docs/production-switch.md`](docs/production-switch.md).
+
+Full policy: [`docs/security-and-data-privacy.md`](docs/security-and-data-privacy.md).
+
+## Business questions it answers
+
+**Sales performance** — daily and weekly trends, best hours and days, average transaction value, items per basket, weekday vs. weekend, period-over-period comparisons.
+
+**Product performance** — top sellers, category net sales, slow movers, trending items, per-item weekly history and projection.
+
+**Payments and adjustments** — payment-method mix, revenue lost to discounts, Square processing fees, and an order-by-order reconciliation between recorded totals and money collected.
+
+**Gross margin** *(optional)* — only where vendor costs are on file, with coverage reported. Profit is never fabricated from missing costs.
+
+> Square sales data alone is *revenue*, not *profit*. Net sales is never described as profit in this project.
+
+Two details that keep comparisons truthful: windows anchor on the **most recent day with sales**, not on today, so a stale extract doesn't manufacture a decline; and a comparison is **suppressed** rather than shown when the extract doesn't fully cover the earlier window, because a 90-day window against two days of prior history reads as +4,659%.
+
+### Deliberately built but not surfaced
+
+Inventory (`kpi_inventory_position`) and gross margin are implemented and tested but **absent from the dashboard**. Against the real store, 480 of 1,584 items carried negative on-hand counts — stock sold but never recorded as received — which made the reorder signal noise. Reinstating it needs the counts corrected at source. Shipping a confident-looking number built on data that doesn't support it is the failure mode worth avoiding.
+
+## Running the real pipeline
+
+See [`docs/setup-guide.md`](docs/setup-guide.md) for full instructions.
+
+```bash
+cp .env.example .env    # paste a Square Sandbox token — see docs/setup-guide.md
+make install
+make doctor             # diagnostics that never reveal the token
+make extract-sandbox
+make silver
+make dbt-build          # 125 pass, 1 intentional warning
+```
+
+Gold tables land in `data/gold/warehouse.duckdb`. Open it with `duckdb data/gold/warehouse.duckdb` and query `main_marts.fact_order_line` or any `main_marts.kpi_*` model directly.
+
+```bash
+make test lint security-check   # 58 pytest, ruff, credential scan
+make dagster-validate           # load every asset, check, job and schedule
+```
+
+### Other warehouses
+
+```bash
+python3 scripts/load_silver_to_snowflake.py     # or load_silver_to_bigquery.py
+RETAILPULSE_DBT_TARGET=snowflake dbt build --project-dir dbt --profiles-dir dbt
+```
+
+The models are portable; the *ingestion* is not, which is why each cloud target has its own loader. `external_location` is a dbt-duckdb feature — every other adapter needs Silver physically loaded. That is the honest shape of a warehouse migration.
 
 ## Technologies
 
-Python 3.11 (the `<3.14` ceiling is enforced in `pyproject.toml` — see [`docs/orchestration.md`](docs/orchestration.md)), [httpx](https://www.python-httpx.org/) (HTTP client with retry/backoff), [pydantic](https://docs.pydantic.dev/) + [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) (typed, secret-aware configuration), [DuckDB](https://duckdb.org/) (embedded OLAP engine + Parquet I/O), [dbt-duckdb](https://github.com/duckdb/dbt-duckdb) (SQL transformation + testing), [Dagster](https://dagster.io/) + [dagster-dbt](https://docs.dagster.io/integrations/dbt) (asset-based orchestration, partitions, backfills, asset checks), [Streamlit](https://streamlit.io/) (KPI dashboard), pytest + ruff (tests/lint), Square REST API `2026-07-15`.
+Python 3.11 · [httpx](https://www.python-httpx.org/) · [pydantic](https://docs.pydantic.dev/) + pydantic-settings · [DuckDB](https://duckdb.org/) · [dbt](https://www.getdbt.com/) (`dbt-duckdb`, `dbt-snowflake`, `dbt-bigquery`) · [Dagster](https://dagster.io/) + dagster-dbt · [Streamlit](https://streamlit.io/) + Altair · Docker · Terraform · Airflow (a parallel DAG, for comparison) · pytest + ruff · Square REST API `2026-07-15`
 
-## Data privacy strategy
-
-- `.env` (holds the Square token) is Git-ignored and never committed, logged, or printed.
-- Raw Square responses under `data/bronze/` are Git-ignored — only `data/.gitkeep` is tracked.
-- This milestone runs against **Square Sandbox exclusively**; no production data is ever touched.
-- Anything published from this project publicly (dashboards, screenshots) will use synthetic or aggregated data — never real customer, employee, or payment information.
-- Full policy: [`docs/security-and-data-privacy.md`](docs/security-and-data-privacy.md).
-
-## How to run
-
-See [`docs/setup-guide.md`](docs/setup-guide.md) for full setup instructions. Quick reference:
-
-```bash
-cp .env.example .env
-# open .env and paste your Square SANDBOX token — see docs/setup-guide.md
-make install
-make doctor
-make check
-make test
-make lint
-make security-check
-make extract-sandbox
-make silver
-make dbt-build
-```
-
-Raw output lands under:
-
-```text
-data/bronze/square/<entity>/extracted_date=YYYY-MM-DD/*.json
-```
-
-Silver tables (the local lake) land under:
-
-```text
-data/silver/locations.parquet
-data/silver/catalog_items.parquet
-data/silver/order_lines.parquet
-data/silver/payments.parquet
-```
-
-Gold tables land in a local DuckDB database file, `data/gold/warehouse.duckdb` — open it with `duckdb data/gold/warehouse.duckdb` and query `main_marts.dim_location`, `main_marts.dim_item`, `main_marts.fact_order_line`, `main_marts.fact_payment`, or any `main_marts.kpi_*` model directly.
-
-### Dashboard
-
-To see the KPI dashboard without configuring Square at all, build the warehouse from synthetic demo data and launch Streamlit:
-
-```bash
-make demo-data    # synthetic Bronze -> Silver -> dbt Gold + KPIs (no Square needed)
-make dashboard    # opens the Streamlit dashboard at http://localhost:8501
-```
-
-`make demo-data` generates a deterministic ~6 weeks of fake orders/payments/inventory **and** synthetic vendor costs (clearly labeled synthetic — no real data), so the dashboard has margins and inventory to show. To run it against your own Square Sandbox data instead, use `make extract-sandbox && make silver && make dbt-build` before `make dashboard`.
-
-### Orchestration
-
-```bash
-make dagster           # asset graph, run history, backfills at http://localhost:3000
-make dagster-validate  # load every asset, check, job and schedule without running them
-```
-
-The UI is where the pipeline is easiest to read: the Bronze → Silver → dbt
-lineage, which partitions have been filled, and the two asset checks. Backfilling
-a range of store-days is a selection in the `square_orders` asset rather than a
-script. Full detail in [`docs/orchestration.md`](docs/orchestration.md).
-
-### Vendor costs (for gross-margin analysis)
-
-Vendor/acquisition costs are **not** in Square — they're an operator-maintained input at `data/input/vendor_costs.csv` (Git-ignored; real cost data is never committed). Generate a synthetic one, or a fill-in template from your real catalog:
-
-```bash
-python3 scripts/generate_synthetic_vendor_costs.py   # reads data/silver/catalog_items.parquet
-```
-
-Edit `unit_cost_cents` / `vendor_name` with your real figures, then `make dbt-build` to recompute margins. Lines with no cost on file show up honestly as "no cost" rather than zero-cost.
-
-## What's complete
-
-- [x] Secure configuration (`SecretStr` token, `.env` Git-ignored, no secret in logs/errors)
-- [x] Square client with cursor pagination, timeouts, and bounded retry/backoff; Sandbox by default with an explicit production opt-in
-- [x] `retailpulse doctor` / `retailpulse check` diagnostics that never reveal the token
-- [x] Immutable, partitioned Bronze JSON storage with `run_id` + `environment` metadata
-- [x] Read-only extraction of locations, catalog, orders, payments, and inventory counts
-- [x] Silver normalization written as Parquet (dedup, catalog join, line-item flattening, card-detail minimization, inventory snapshots)
-- [x] dbt-duckdb Gold layer: dimensions, facts, and tested KPI models (sales, reconciliation, per-item sales, forecast, and optional margin/inventory)
-- [x] **Per-item sales analytics** (`kpi_item_sales`, `kpi_item_weekly_sales`) — units and revenue per period vs. the equivalent window before it, plus weekly history
-- [x] **Sales forecasting** (`kpi_item_forecast`) — projected units per item for the next 4 weeks (linear trend on a zero-filled series, honest fallback)
-- [x] **Period-aware KPI layer** (`dim_period`) — every headline model built at (period, key) grain with prior-window comparisons, and comparisons suppressed where history doesn't support them
-- [x] Optional gross margin (from operator-maintained vendor costs) — gracefully empty when that data doesn't exist, so a build never fails without it
-- [x] Streamlit dashboard sourced entirely from the tested KPI models; margin section hidden when its data is absent
-- [x] Local `make security-check` and full-pipeline CI (synthetic data → Silver → dbt build → dashboard smoke test → Dagster definitions validation) with zero credentials
-- [x] **Dagster orchestration** — 42 assets end to end, daily-partitioned ingest on the store's calendar (DST-correct), exponential-backoff retries on the rate-limited Square API, two schedules, and asset checks for warehouse freshness and timezone regressions
+**Why DuckDB as the default:** it is a free, embedded, columnar OLAP engine, and reading Parquet directly off disk is the same pattern a lakehouse uses with S3 and Iceberg, minus the account. Anyone can clone this repo and get a working warehouse in one command — which is also why the Snowflake and BigQuery targets exist: to show the choice is not a constraint.
 
 ## What's next
 
-- M6: Deployment — public demo on synthetic data, plus a Dockerfile for the real pipeline
-- Schema contracts at the Bronze→Silver boundary (Pydantic validation, dbt `contract: enforced`, source freshness)
-- Incremental `fact_order_line` with a lookback window for late-arriving order edits
-- M7: Webhook-driven incremental ingestion
-- M8/M9: Demand forecasting and reorder recommendations
+- Schema contracts at the Bronze→Silver boundary — Pydantic at the edge, dbt `contract: enforced` on staging, source freshness
+- Incremental `fact_order_line` with a lookback window, since Square can amend an order after close
+- A second source: supplier invoices, which forces real entity resolution between invoice text and the Square catalog
 
-See [`docs/project-charter.md`](docs/project-charter.md) for the full charter, [`docs/data-dictionary.md`](docs/data-dictionary.md) for the model reference, and [`docs/production-switch.md`](docs/production-switch.md) to validate on your real store's data.
+See [`docs/project-charter.md`](docs/project-charter.md) for the charter, [`docs/data-dictionary.md`](docs/data-dictionary.md) for the model reference, and [`docs/orchestration.md`](docs/orchestration.md) for the asset graph.

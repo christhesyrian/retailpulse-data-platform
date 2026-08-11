@@ -42,6 +42,9 @@ WAREHOUSE_PATH = Path(
 )
 WEEKDAY_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 DEFAULT_PERIOD = "Last 30 days"
+# Set by streamlit_app.py, the hosted-demo entrypoint. Only ever changes what
+# the app says about where its numbers came from — never how one is computed.
+DEMO_MODE = os.environ.get("RETAILPULSE_DEMO") == "1"
 
 # One height scale for every chart, so nothing looks accidental.
 CHART_TALL = 290
@@ -1423,7 +1426,13 @@ def render_back_office(payments: pd.DataFrame) -> None:
 def render_sidebar(coverage: pd.Series) -> None:
     with st.sidebar:
         st.subheader("Source")
-        st.caption(f"`{WAREHOUSE_PATH}`")
+        if DEMO_MODE:
+            # The path is a throwaway temp directory in the demo, so it tells
+            # the reader nothing. What they need to know is whose numbers these
+            # are, and the answer is nobody's.
+            st.caption("Synthetic fixture, generated at startup.")
+        else:
+            st.caption(f"`{WAREHOUSE_PATH}`")
         st.caption(
             f"Rebuilt through {coverage['last_sale_date']:%b %-d, %Y}. Read-only — the "
             "dashboard never writes to the warehouse."
@@ -1432,10 +1441,19 @@ def render_sidebar(coverage: pd.Series) -> None:
             st.cache_data.clear()
             st.rerun()
         st.divider()
-        st.caption(
-            "Built from your own Square data. Keep these figures local; the committed "
-            "demo uses synthetic data."
-        )
+        if DEMO_MODE:
+            st.caption(
+                "**This is the public demo.** Every figure is computed from a "
+                "generated fixture describing a fictional store — no real "
+                "business data is present, and none is reachable from here. The "
+                "pipeline, the 33 dbt models and the 93 tests behind it are the "
+                "same ones that run against the real warehouse."
+            )
+        else:
+            st.caption(
+                "Built from your own Square data. Keep these figures local; the "
+                "committed demo uses synthetic data."
+            )
 
 
 # --- app -------------------------------------------------------------------

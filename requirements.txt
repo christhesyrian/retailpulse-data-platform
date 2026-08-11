@@ -1,0 +1,10 @@
+# Streamlit Community Cloud installs this file, and only this file.
+#
+# It exists solely for the hosted demo. Everything else — local development,
+# CI, Docker — installs from pyproject.toml, which is the real dependency
+# declaration; this is one line so the two cannot drift.
+#
+#   make install    ->  pip install -e '.[dev,dashboard]'
+#   CI              ->  pip install -e '.[dev,orchestration]'
+#   this demo       ->  the `demo` extra: streamlit + dbt + dbt-duckdb
+.[demo]

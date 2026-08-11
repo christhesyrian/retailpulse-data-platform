@@ -18,6 +18,12 @@ headless = true
 [browser]
 gatherUsageStats = false
 
+[client]
+# "minimal" keeps the useful bits of the toolbar (rerun, fullscreen a chart)
+# and drops the Deploy button and developer options, which mean nothing to
+# someone reading the hosted demo and are the first thing in every screenshot.
+toolbarMode = "minimal"
+
 [theme]
 # Light, for everyone. The validated light palette is declared inline here
 # rather than under [theme.light], and there is deliberately no [theme.dark]
