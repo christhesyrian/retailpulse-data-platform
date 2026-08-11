@@ -47,7 +47,7 @@ window_8w as (
 
 weekday_profile as (
     select
-        isodow(sale_date) as day_of_week,
+        {{ day_of_week_iso('sale_date') }} as day_of_week,
         avg(net_sales_cents) as avg_net_sales_cents,
         count(*) as observations
     from window_8w
@@ -72,15 +72,13 @@ factor as (
     from trend
 ),
 
--- Cast at the source: range() yields BIGINT and DuckDB has no DATE + BIGINT
--- operator, so every date expression below would fail to bind.
-horizon as (select cast(days_ahead as integer) as days_ahead from range(1, 32) as t(days_ahead))
+horizon as (select n as days_ahead from ({{ integers(1, 31) }}) s)
 
 select
-    cast(a.as_of_date + h.days_ahead as date) as forecast_date,
+    cast({{ add_days('a.as_of_date', 'h.days_ahead') }} as date) as forecast_date,
     h.days_ahead,
-    dayname(a.as_of_date + h.days_ahead) as day_name,
-    isodow(a.as_of_date + h.days_ahead) as day_of_week,
+    {{ day_name(add_days('a.as_of_date', 'h.days_ahead')) }} as day_name,
+    {{ day_of_week_iso(add_days('a.as_of_date', 'h.days_ahead')) }} as day_of_week,
     cast(round(w.avg_net_sales_cents * f.trend_factor) as bigint)
         as forecast_net_sales_cents,
     cast(round(w.avg_net_sales_cents) as bigint) as weekday_avg_cents,
@@ -91,5 +89,6 @@ select
 from horizon h
 cross join anchor a
 cross join factor f
-join weekday_profile w on w.day_of_week = isodow(a.as_of_date + h.days_ahead)
+join weekday_profile w
+    on w.day_of_week = {{ day_of_week_iso(add_days('a.as_of_date', 'h.days_ahead')) }}
 order by h.days_ahead

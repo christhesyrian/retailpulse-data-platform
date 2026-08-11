@@ -49,12 +49,19 @@ joined as (
 -- Trailing 7-day average smooths the weekday sawtooth so the trend is
 -- readable on the daily chart. It stays null until a full 7 days exist,
 -- rather than reporting a short window as if it were a week.
+--
+-- The frame is spelled out twice instead of being declared once in a named
+-- `window` clause: that clause is standard SQL and works on DuckDB, but
+-- Snowflake has no support for it and fails to parse the query.
 select
     j.*,
     case
-        when count(*) over trailing_week = 7
-            then round(avg(j.net_sales_cents) over trailing_week)
+        when count(*) over (
+                order by j.sale_date rows between 6 preceding and current row
+             ) = 7
+            then round(avg(j.net_sales_cents) over (
+                order by j.sale_date rows between 6 preceding and current row
+            ))
     end as net_sales_7d_avg_cents
 from joined j
-window trailing_week as (order by j.sale_date rows between 6 preceding and current row)
 order by j.sale_date

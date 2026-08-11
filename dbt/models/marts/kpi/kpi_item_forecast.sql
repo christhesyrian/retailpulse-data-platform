@@ -1,7 +1,7 @@
 -- Per-item weekly sales forecast for the next 4 weeks.
 --
 -- Method (deliberately simple and explainable, not a black box): fit a
--- linear trend (ordinary least squares via DuckDB regr_slope/regr_intercept)
+-- linear trend (ordinary least squares via regr_slope/regr_intercept)
 -- to each item's weekly units over the last up-to-8 COMPLETE weeks, then
 -- project it forward. Items with fewer than 2 weeks of history fall back to
 -- their average weekly units. Forecasts are floored at 0 and rounded.
@@ -26,17 +26,16 @@
 -- each number so the dashboard can be honest about it.
 with anchors as (
     select
-        date_trunc('week', current_date)::date as this_week_start,
-        (date_trunc('week', current_date) - interval 8 week)::date as window_start
+        cast(date_trunc('week', current_date) as date) as this_week_start,
+        cast({{ add_days("date_trunc('week', current_date)", -56) }} as date) as window_start
 ),
 
--- Every complete ISO week in the fit window, sales or not.
+-- Every complete ISO week in the fit window, sales or not: the 8 week-starts
+-- from window_start up to but excluding this_week_start.
 weeks as (
-    select unnest(generate_series(
-        (select window_start from anchors),
-        (select this_week_start from anchors) - interval 7 day,
-        interval 7 day
-    ))::date as week_start
+    select cast({{ add_days('a.window_start', 'o.n * 7') }} as date) as week_start
+    from anchors a
+    cross join ({{ integers(0, 7) }}) o
 ),
 
 actuals as (
@@ -84,7 +83,7 @@ fit as (
 ),
 
 horizon as (
-    select unnest(generate_series(1, 4)) as h
+    select n as h from ({{ integers(1, 4) }}) s
 )
 
 -- weeks_ahead = 1 is NEXT week (the current partial week is excluded — its
@@ -92,22 +91,24 @@ horizon as (
 -- most recent point is last complete week (index last_idx); the current
 -- partial week would be last_idx + 1, so next week is last_idx + 2, etc.
 --
--- A single-point series makes regr_slope return NaN rather than NULL, and
--- greatest(0, NULL) collapses to 0 — so an `is not null` guard alone would
--- silently forecast zero for every brand-new item. Check for NaN explicitly.
+-- A single-point series makes regr_slope return NaN rather than NULL on
+-- DuckDB, and greatest(0, NULL) collapses to 0 — so an `is not null` guard
+-- alone would silently forecast zero for every brand-new item. Both guards are
+-- kept because the warehouses differ: Snowflake returns NULL where DuckDB
+-- returns NaN, so each engine is caught by a different half of the condition.
 select
     f.variation_id,
     f.item_name,
-    (a.this_week_start + h.h * interval 7 day)::date as forecast_week_start,
+    cast({{ add_days('a.this_week_start', 'h.h * 7') }} as date) as forecast_week_start,
     h.h as weeks_ahead,
     f.weeks_of_history,
     case
-        when f.weeks_of_history >= 2 and f.slope is not null and not isnan(f.slope)
+        when f.weeks_of_history >= 2 and f.slope is not null and not {{ is_nan('f.slope') }}
             then greatest(0, round(f.intercept + f.slope * (f.last_idx + 1 + h.h)))
         else greatest(0, round(coalesce(f.avg_units, 0)))
     end as forecast_units,
     case
-        when f.weeks_of_history >= 2 and f.slope is not null and not isnan(f.slope)
+        when f.weeks_of_history >= 2 and f.slope is not null and not {{ is_nan('f.slope') }}
             then 'linear_trend'
         else 'avg_fallback'
     end as method

@@ -6,7 +6,9 @@
 -- A duplicate here would double-count a category or an item inside a period,
 -- which is exactly the class of bug that inflated the forecast before
 -- kpi_item_weekly_sales was regrouped.
-select 'kpi_summary' as model, period_label, cast('' as varchar) as key_2, count(*) as rows
+-- `row_count`, not `rows`: the latter is a reserved word on Snowflake and
+-- fails to parse there while being a perfectly good alias on DuckDB.
+select 'kpi_summary' as model, period_label, cast('' as varchar) as key_2, count(*) as row_count
 from {{ ref('kpi_summary') }}
 group by 1, 2, 3
 having count(*) > 1

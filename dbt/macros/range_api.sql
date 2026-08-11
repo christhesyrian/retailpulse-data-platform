@@ -1,5 +1,5 @@
 {#
-  Parameterized range macros: the KPI layer for arbitrary date windows.
+  Parameterized range API: the KPI layer for arbitrary date windows.
 
   The precomputed `kpi_*` models answer five fixed questions very well, because
   every one is built at (period_label, key) grain against `dim_period`. That
@@ -8,36 +8,233 @@
 
   Rather than move the aggregation into the dashboard — which would break the
   rule that every number on screen comes from a tested warehouse object — the
-  same SQL is published as DuckDB *table macros* taking (start, end). The
-  dashboard passes two dates and renders rows; it still computes nothing.
+  same SQL is published as parameterized warehouse objects taking (start, end).
+  The dashboard passes two dates and renders rows; it still computes nothing.
+
+  Each relation below is defined once, as a body plus the columns it returns,
+  and published in whatever form the target warehouse has for "a relation you
+  pass arguments to":
+
+    DuckDB     a table macro,  called as `rp_x(a, b)`
+    Snowflake  a SQL UDTF,     called as `table(rp_x(a, b))`
+
+  Those are one object under two spellings, with one difference worth knowing:
+  Snowflake requires the returned columns to be declared, and rejects
+  `returns table ()` rather than inferring them. That is why each relation
+  carries a signature next to its body. It is not pure overhead — the
+  declaration is a contract, so a body that stops producing what it promises
+  fails at build time on Snowflake, where DuckDB would simply publish the new
+  shape and let the dashboard find out.
 
   The honesty guarantee is the equivalence test in
   tests/assert_range_macros_match_periods.sql: for each of the five canonical
-  windows, calling the macro with that window's bounds must reproduce the
+  windows, calling the relation with that window's bounds must reproduce the
   precomputed model's numbers exactly. Custom ranges therefore cannot silently
   drift away from the presets — if these two ways of computing a KPI ever
-  disagree, the build fails.
+  disagree, the build fails. That test runs on both warehouses.
 
   Prior-window semantics match dim_period exactly: the prior window is the
   equivalent span immediately before the selected one, and comparisons are
   NULL rather than zero when the extract does not fully cover it.
 #}
 
+{#-
+  Where these relations live.
+
+  dbt sets no current schema on the Snowflake session, so an unqualified
+  `create function` fails with "This session does not have a current schema"
+  — and an unqualified call would not resolve either. Both need the marts
+  schema spelled out, and `anchor` is whichever relation the caller can see it
+  through: `this` while the post-hook is publishing them, and a ref to
+  rp_range_api from anywhere else. It cannot be a ref in both places, because
+  the publishing model resolving a ref to itself is a graph cycle.
+
+  DuckDB keeps the bare name it has always used: its macros are created in the
+  connection's current schema, which is already the right one.
+-#}
+{% macro range_relation(name, anchor) %}
+  {{ return(adapter.dispatch('range_relation', 'retailpulse')(name, anchor)) }}
+{% endmacro %}
+
+{% macro default__range_relation(name, anchor) -%}
+{{ name }}
+{%- endmacro %}
+
+{% macro snowflake__range_relation(name, anchor) -%}
+{{ anchor.database }}.{{ anchor.schema }}.{{ name }}
+{%- endmacro %}
+
+
+{#-
+  Publish one parameterized relation. Both forms take two DATE arguments and
+  return a table; only the syntax and the explicit column list differ.
+-#}
+{% macro publish_range_relation(name, returns, body) %}
+  {{ return(adapter.dispatch('publish_range_relation', 'retailpulse')(name, returns, body)) }}
+{% endmacro %}
+
+{% macro default__publish_range_relation(name, returns, body) %}
+create or replace macro {{ range_relation(name, this) }}(p_start, p_end) as table
+{{ body }};
+{% endmacro %}
+
+{% macro snowflake__publish_range_relation(name, returns, body) %}
+create or replace function {{ range_relation(name, this) }}(p_start date, p_end date)
+returns table ({{ returns }})
+as $${{ body }}$$;
+{% endmacro %}
+
+
+{#-
+  How the shared window arithmetic is reached from inside another body. Every
+  relation except rp_window itself begins with it.
+
+  DuckDB calls the published macro. Snowflake inlines the same SQL instead,
+  because a UDTF that calls another UDTF can only be invoked with constant
+  arguments: correlate the outer call to a table's rows -- which is exactly
+  what the equivalence test does, and what any per-row use would do -- and the
+  planner gives up with "Unsupported subquery type cannot be evaluated". One
+  level of correlated table function is fine; two is not.
+
+  So rp_window is still published as a callable relation on both warehouses,
+  and is still the single definition of the window arithmetic, but on Snowflake
+  its callers embed that definition rather than call through it.
+-#}
+{% macro rp_window_call(anchor) %}
+  {{ return(adapter.dispatch('rp_window_call', 'retailpulse')(anchor)) }}
+{% endmacro %}
+
+{% macro default__rp_window_call(anchor) -%}
+rp_window(p_start, p_end)
+{%- endmacro %}
+
+{% macro snowflake__rp_window_call(anchor) -%}
+({{ rp_window_body(anchor) }})
+{%- endmacro %}
+
+
+{#-
+  The ORDER BY that ends most of these bodies — on DuckDB only.
+
+  Snowflake accepts `order by` inside a UDTF when the function is called with
+  constant arguments, and then refuses the same function when it is called
+  against a table's rows: "Unsupported subquery type cannot be evaluated". The
+  clause is what makes the body undecorrelatable, and nothing else about it.
+
+  No result is lost by dropping it, because a table function does not promise
+  ordered output on either warehouse — anything that needs a specific order has
+  to say so at the call site. It stays on DuckDB only because the dashboard's
+  queries were written against macros that happen to return sorted rows, and
+  quietly reordering its tables is not part of this change.
+-#}
+{% macro range_order_by(expr) %}
+  {{ return(adapter.dispatch('range_order_by', 'retailpulse')(expr)) }}
+{% endmacro %}
+
+{% macro default__range_order_by(expr) -%}
+order by {{ expr }}
+{%- endmacro %}
+
+{% macro snowflake__range_order_by(expr) -%}
+{%- endmacro %}
+
+
+{#-
+  How a relation is called from an ordinary query.
+-#}
+{% macro range_call(name, start_expr, end_expr) %}
+  {{ return(adapter.dispatch('range_call', 'retailpulse')(name, start_expr, end_expr)) }}
+{% endmacro %}
+
+{% macro default__range_call(name, start_expr, end_expr) -%}
+{{ name }}({{ start_expr }}, {{ end_expr }})
+{%- endmacro %}
+
+{% macro snowflake__range_call(name, start_expr, end_expr) -%}
+table({{ range_relation(name, ref('rp_range_api')) }}({{ start_expr }}, {{ end_expr }}))
+{%- endmacro %}
+
+
+{#-
+  The five canonical windows, read out of dim_period at compile time.
+
+  The equivalence test needs each relation evaluated once per canonical window.
+  The obvious way to write that is a correlated call — join dim_period to the
+  relation and let the bounds come from each row — and it is how this test used
+  to be written. It does not survive contact with Snowflake: a UDTF whose body
+  joins two of its own aggregated subqueries (which is most of them, since a
+  percent-of-total needs the total) cannot be invoked per row at all. The
+  planner reports "Unsupported subquery type cannot be evaluated" and there is
+  no rewrite of the call that avoids it.
+
+  So the bounds are resolved here instead, and each relation is called five
+  times with constant dates. Same comparison, same five windows, and it now
+  runs on both warehouses rather than only the one whose planner cooperates.
+
+  Empty during parsing (`execute` is false and dim_period may not exist yet);
+  the test emits a trivially-passing query in that case.
+-#}
+{% macro canonical_windows() %}
+  {%- if not execute -%}
+    {{ return([]) }}
+  {%- endif -%}
+  {%- set results = run_query(
+        "select period_label, period_start, period_end, period_days from "
+        ~ ref('dim_period') ~ " order by period_order") -%}
+  {{ return(results.rows) }}
+{% endmacro %}
+
+
+{#-
+  One relation evaluated over every canonical window, labelled and unioned —
+  the shape the equivalence test compares against the precomputed models.
+-#}
+{% macro range_over_periods(name, windows, with_period_days=false) -%}
+{%- for w in windows %}
+{% if not loop.first %}union all {% endif %}select
+    cast('{{ w[0] }}' as varchar) as period_label,
+    {%- if with_period_days %}
+    cast({{ 'null' if w[3] is none else w[3] }} as integer) as period_days,
+    {%- endif %}
+    r.*
+from {{ range_call(name, "cast('" ~ w[1] ~ "' as date)", "cast('" ~ w[2] ~ "' as date)") }} r
+{%- endfor %}
+{%- endmacro %}
+
+
+{#-
+  Rebuild every relation. Called from rp_range_api's post-hook so that dbt owns
+  their lifecycle: they are recreated on every build, from SQL in version
+  control, after the facts they read have been built.
+-#}
 {% macro create_range_macros() %}
+{% for r in [
+    ('rp_window',              rp_window_returns(),              rp_window_body(this)),
+    ('rp_summary_range',       rp_summary_range_returns(),       rp_summary_range_body(this)),
+    ('rp_category_range',      rp_category_range_returns(),      rp_category_range_body(this)),
+    ('rp_weekday_range',       rp_weekday_range_returns(),       rp_weekday_range_body(this)),
+    ('rp_hour_range',          rp_hour_range_returns(),          rp_hour_range_body(this)),
+    ('rp_popular_times_range', rp_popular_times_range_returns(), rp_popular_times_range_body(this)),
+    ('rp_payments_range',      rp_payments_range_returns(),      rp_payments_range_body(this)),
+    ('rp_items_range',         rp_items_range_returns(),         rp_items_range_body(this))
+] %}
+{{ publish_range_relation(r[0], r[1], r[2]) }}
+{% endfor %}
+{% endmacro %}
 
-{% set fact_order_line = ref('fact_order_line') %}
-{% set fact_payment = ref('fact_payment') %}
-{% set fact_margin = ref('fact_order_line_margin') %}
-{% set dim_item = ref('dim_item') %}
 
---------------------------------------------------------------------------
--- Shared window arithmetic.
---
--- Returns the selected window, the equivalent prior window, and whether the
--- extract actually covers that prior window. Every macro below starts here so
--- that "the previous 30 days" means one thing in exactly one place.
---------------------------------------------------------------------------
-create or replace macro rp_window(p_start, p_end) as table
+{#-
+  Shared window arithmetic.
+
+  Returns the selected window, the equivalent prior window, and whether the
+  extract actually covers that prior window. Every macro below starts here so
+  that "the previous 30 days" means one thing in exactly one place.
+-#}
+{% macro rp_window_returns() %}period_start date, period_end date, period_days number,
+        prior_start date, prior_end date, prior_window_complete boolean{% endmacro %}
+
+{% macro rp_window_body(anchor) %}
+{%- set fact_order_line = ref('fact_order_line') -%}
 with bounds as (
     select
         cast(p_start as date) as period_start,
@@ -62,13 +259,32 @@ select
     -- number (a 90-day view against 2 days of prior data reads as +4,659%).
     (b.period_start - b.period_days) >= h.first_sale_date as prior_window_complete
 from bounds b
-cross join history h;
+cross join history h
+{% endmacro %}
 
---------------------------------------------------------------------------
--- Headline KPIs. Mirrors kpi_summary.
---------------------------------------------------------------------------
-create or replace macro rp_summary_range(p_start, p_end) as table
-with w as (select * from rp_window(p_start, p_end)),
+
+{#-
+  Headline KPIs. Mirrors kpi_summary.
+-#}
+{% macro rp_summary_range_returns() %}period_start date, period_end date, period_days number,
+        prior_start date, prior_end date,
+        orders number, units number(38, 4),
+        gross_sales_cents number, discount_cents number,
+        tax_cents number, net_sales_cents number,
+        avg_order_value_cents number, units_per_order number(38, 2),
+        collected_cents number, processing_fee_cents number,
+        prior_window_complete boolean,
+        prior_net_sales_cents number, prior_orders number, prior_units number(38, 4),
+        net_sales_change_pct number(38, 1), orders_change_pct number(38, 1),
+        units_change_pct number(38, 1),
+        cogs_cents number, gross_profit_cents number,
+        gross_margin_pct number(38, 2), cost_coverage_pct number(38, 1){% endmacro %}
+
+{% macro rp_summary_range_body(anchor) %}
+{%- set fact_order_line = ref('fact_order_line') -%}
+{%- set fact_payment = ref('fact_payment') -%}
+{%- set fact_margin = ref('fact_order_line_margin') -%}
+with w as (select * from {{ rp_window_call(anchor) }}),
 lines as (
     select sale_date, order_line_key, square_order_id, quantity,
            gross_sales_cents, discount_cents, tax_cents, net_sales_cents
@@ -157,13 +373,21 @@ from w
 cross join current_lines c
 cross join prior_lines pr
 cross join current_payments y
-cross join current_margin m;
+cross join current_margin m
+{% endmacro %}
 
---------------------------------------------------------------------------
--- Sales by category. Mirrors kpi_sales_by_category.
---------------------------------------------------------------------------
-create or replace macro rp_category_range(p_start, p_end) as table
-with w as (select * from rp_window(p_start, p_end)),
+
+{#-
+  Sales by category. Mirrors kpi_sales_by_category.
+-#}
+{% macro rp_category_range_returns() %}category_name varchar, orders number, units number(38, 4),
+        net_sales_cents number, pct_of_net_sales number(38, 2),
+        prior_net_sales_cents number, net_sales_change_pct number(38, 1){% endmacro %}
+
+{% macro rp_category_range_body(anchor) %}
+{%- set fact_order_line = ref('fact_order_line') -%}
+{%- set dim_item = ref('dim_item') -%}
+with w as (select * from {{ rp_window_call(anchor) }}),
 lines as (
     -- Category lives on dim_item, joined on the item surrogate key, and
     -- unmatched lines are labelled rather than dropped — exactly as
@@ -212,20 +436,26 @@ from current_rows c
 cross join total t
 cross join w
 left join prior_rows pr on pr.category_name = c.category_name
-order by c.net_sales_cents desc;
+{{ range_order_by('c.net_sales_cents desc') }}
+{% endmacro %}
 
---------------------------------------------------------------------------
--- Sales by weekday. Mirrors kpi_sales_by_weekday.
---------------------------------------------------------------------------
-create or replace macro rp_weekday_range(p_start, p_end) as table
-with w as (select * from rp_window(p_start, p_end))
+
+{#-
+  Sales by weekday. Mirrors kpi_sales_by_weekday.
+-#}
+{% macro rp_weekday_range_returns() %}day_of_week number, day_name varchar, is_weekend boolean,
+        orders number, net_sales_cents number, avg_order_value_cents number{% endmacro %}
+
+{% macro rp_weekday_range_body(anchor) %}
+{%- set fact_order_line = ref('fact_order_line') -%}
+with w as (select * from {{ rp_window_call(anchor) }})
 select
     -- Derived from sale_date, which is already the store's local day. Reading
     -- the weekday off the UTC timestamp is the bug that put Friday evening's
     -- trade on Saturday for a year.
-    isodow(l.sale_date) as day_of_week,
-    dayname(l.sale_date) as day_name,
-    isodow(l.sale_date) in (6, 7) as is_weekend,
+    {{ day_of_week_iso('l.sale_date') }} as day_of_week,
+    {{ day_name('l.sale_date') }} as day_name,
+    {{ day_of_week_iso('l.sale_date') }} in (6, 7) as is_weekend,
     count(distinct l.square_order_id) as orders,
     sum(l.net_sales_cents) as net_sales_cents,
     case when count(distinct l.square_order_id) > 0
@@ -234,14 +464,19 @@ select
 from w cross join {{ fact_order_line }} l
 where l.sale_date is not null
   and l.sale_date between w.period_start and w.period_end
-group by isodow(l.sale_date), dayname(l.sale_date)
-order by day_of_week;
+group by {{ day_of_week_iso('l.sale_date') }}, {{ day_name('l.sale_date') }}
+{{ range_order_by('day_of_week') }}
+{% endmacro %}
 
---------------------------------------------------------------------------
--- Sales by hour of day. Mirrors kpi_sales_by_hour.
---------------------------------------------------------------------------
-create or replace macro rp_hour_range(p_start, p_end) as table
-with w as (select * from rp_window(p_start, p_end))
+
+{#-
+  Sales by hour of day. Mirrors kpi_sales_by_hour.
+-#}
+{% macro rp_hour_range_returns() %}hour_of_day number, orders number, net_sales_cents number{% endmacro %}
+
+{% macro rp_hour_range_body(anchor) %}
+{%- set fact_order_line = ref('fact_order_line') -%}
+with w as (select * from {{ rp_window_call(anchor) }})
 select
     cast(extract(hour from l.closed_at_local) as integer) as hour_of_day,
     count(distinct l.square_order_id) as orders,
@@ -250,28 +485,35 @@ from w cross join {{ fact_order_line }} l
 where l.sale_date is not null
   and l.sale_date between w.period_start and w.period_end
 group by hour_of_day
-order by hour_of_day;
+{{ range_order_by('hour_of_day') }}
+{% endmacro %}
 
---------------------------------------------------------------------------
--- Busyness by hour, per weekday — the "popular times" grid.
---
--- The separate weekday and hour-of-day views each answer half a question. A
--- shopkeeper deciding when to put a second person on the till needs the other
--- half: Friday at 5pm is not Tuesday at 5pm. This is the cross-tab, plus
--- `busyness_pct` — each hour as a share of that weekday's own busiest hour, so
--- a quiet Monday is still readable on the same scale as a heaving Saturday.
---
--- `days_observed` is published because it is the honest caveat: a 7-day window
--- gives exactly one of each weekday, and an average over one observation is
--- just that day.
---------------------------------------------------------------------------
-create or replace macro rp_popular_times_range(p_start, p_end) as table
-with w as (select * from rp_window(p_start, p_end)),
+
+{#-
+  Busyness by hour, per weekday — the "popular times" grid.
+
+  The separate weekday and hour-of-day views each answer half a question. A
+  shopkeeper deciding when to put a second person on the till needs the other
+  half: Friday at 5pm is not Tuesday at 5pm. This is the cross-tab, plus
+  `busyness_pct` — each hour as a share of that weekday's own busiest hour, so
+  a quiet Monday is still readable on the same scale as a heaving Saturday.
+
+  `days_observed` is published because it is the honest caveat: a 7-day window
+  gives exactly one of each weekday, and an average over one observation is
+  just that day.
+-#}
+{% macro rp_popular_times_range_returns() %}day_of_week number, day_name varchar, hour_of_day number,
+        days_observed number, orders number, net_sales_cents number,
+        orders_per_day number(38, 1), busyness_pct number{% endmacro %}
+
+{% macro rp_popular_times_range_body(anchor) %}
+{%- set fact_order_line = ref('fact_order_line') -%}
+with w as (select * from {{ rp_window_call(anchor) }}),
 lines as (
     select
         l.sale_date,
-        isodow(l.sale_date) as day_of_week,
-        dayname(l.sale_date) as day_name,
+        {{ day_of_week_iso('l.sale_date') }} as day_of_week,
+        {{ day_name('l.sale_date') }} as day_name,
         cast(extract(hour from l.closed_at_local) as integer) as hour_of_day,
         l.square_order_id,
         l.net_sales_cents
@@ -308,13 +550,20 @@ select
     round(100.0 * s.orders / nullif(p.peak_orders, 0)) as busyness_pct
 from per_slot s
 join peak p on p.day_of_week = s.day_of_week
-order by s.day_of_week, s.hour_of_day;
+{{ range_order_by('s.day_of_week, s.hour_of_day') }}
+{% endmacro %}
 
---------------------------------------------------------------------------
--- Payment methods. Mirrors kpi_payment_methods.
---------------------------------------------------------------------------
-create or replace macro rp_payments_range(p_start, p_end) as table
-with w as (select * from rp_window(p_start, p_end)),
+
+{#-
+  Payment methods. Mirrors kpi_payment_methods.
+-#}
+{% macro rp_payments_range_returns() %}source_type varchar, payments number,
+        amount_collected_cents number, processing_fee_cents number,
+        pct_of_collected number(38, 2){% endmacro %}
+
+{% macro rp_payments_range_body(anchor) %}
+{%- set fact_payment = ref('fact_payment') -%}
+with w as (select * from {{ rp_window_call(anchor) }}),
 current_rows as (
     select
         y.source_type,
@@ -336,17 +585,29 @@ select
     end as pct_of_collected
 from current_rows c
 cross join total t
-order by c.amount_collected_cents desc;
+{{ range_order_by('c.amount_collected_cents desc') }}
+{% endmacro %}
 
---------------------------------------------------------------------------
--- Per-item sales. Mirrors kpi_item_sales.
---
--- units_all_time / first_sold_at / last_sold_at are deliberately whole-history
--- figures, not window figures — they answer "is this item still alive at all",
--- which a window cannot.
---------------------------------------------------------------------------
-create or replace macro rp_items_range(p_start, p_end) as table
-with w as (select * from rp_window(p_start, p_end)),
+
+{#-
+  Per-item sales. Mirrors kpi_item_sales.
+
+  units_all_time / first_sold_at / last_sold_at are deliberately whole-history
+  figures, not window figures — they answer "is this item still alive at all",
+  which a window cannot.
+-#}
+{% macro rp_items_range_returns() %}variation_id varchar, item_name varchar, variation_name varchar,
+        category_name varchar, is_lottery boolean,
+        units number(38, 4), orders number, net_sales_cents number,
+        avg_weekly_units number(38, 2),
+        prior_units number(38, 4), prior_net_sales_cents number,
+        units_change_pct number(38, 1), net_sales_change_pct number(38, 1),
+        units_all_time number(38, 4), first_sold_at date, last_sold_at date{% endmacro %}
+
+{% macro rp_items_range_body(anchor) %}
+{%- set fact_order_line = ref('fact_order_line') -%}
+{%- set dim_item = ref('dim_item') -%}
+with w as (select * from {{ rp_window_call(anchor) }}),
 lines as (
     select
         f.sale_date,
@@ -426,6 +687,5 @@ cross join w
 left join prior_rows pr on pr.variation_id = c.variation_id
 left join lifetime lt on lt.variation_id = c.variation_id
 left join categories cat on cat.square_catalog_object_id = c.variation_id
-order by c.net_sales_cents desc;
-
+{{ range_order_by('c.net_sales_cents desc') }}
 {% endmacro %}

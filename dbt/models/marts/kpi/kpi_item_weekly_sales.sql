@@ -10,7 +10,7 @@
 -- under differently-typed names, which double-counts it in anything that
 -- indexes the series by position (the forecast did exactly that).
 select
-    date_trunc('week', sale_date)::date as week_start,
+    cast(date_trunc('week', sale_date) as date) as week_start,
     coalesce(catalog_object_id, 'custom:' || coalesce(item_name, 'unknown')) as variation_id,
     max(item_name) as item_name,
     max(variation_name) as variation_name,

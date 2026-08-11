@@ -17,9 +17,9 @@ periods as (
 select
     p.period_label,
     p.period_order,
-    isodow(l.sale_date) as day_of_week,        -- 1 = Monday ... 7 = Sunday
-    dayname(l.sale_date) as day_name,
-    isodow(l.sale_date) in (6, 7) as is_weekend,
+    {{ day_of_week_iso('l.sale_date') }} as day_of_week,   -- 1 = Monday ... 7 = Sunday
+    {{ day_name('l.sale_date') }} as day_name,
+    {{ day_of_week_iso('l.sale_date') }} in (6, 7) as is_weekend,
     count(distinct l.square_order_id) as orders,
     sum(l.net_sales_cents) as net_sales_cents,
     case

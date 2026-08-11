@@ -19,35 +19,56 @@
 -- a period definition), whereas a custom range always has a definite length.
 -- The item comparison therefore runs only over the bounded windows.
 
-with periods as (
-    select * from {{ ref('dim_period') }}
-),
+-- Two dependencies dbt cannot infer, declared so the ordering is real rather
+-- than accidental: the relations this test calls are published by
+-- rp_range_api's post-hook, and calling one is not a `ref`; and dim_period is
+-- read at compile time inside canonical_windows(), behind an `execute` guard
+-- that hides the ref from the parser.
+-- depends_on: {{ ref('rp_range_api') }}
+-- depends_on: {{ ref('dim_period') }}
 
--- DuckDB cannot outer-join against a correlated lateral, so each macro is
--- materialized once per canonical window first and compared afterwards.
-m_summary as (
-    select p.period_label, r.*
-    from periods p, lateral rp_summary_range(p.period_start, p.period_end) r
+{#- Resolved outside the conditional below so the parser can still see them. -#}
+{%- set kpi_summary = ref('kpi_summary') %}
+{%- set kpi_sales_by_category = ref('kpi_sales_by_category') %}
+{%- set kpi_sales_by_weekday = ref('kpi_sales_by_weekday') %}
+{%- set kpi_sales_by_hour = ref('kpi_sales_by_hour') %}
+{%- set kpi_payment_methods = ref('kpi_payment_methods') %}
+{%- set kpi_item_sales = ref('kpi_item_sales') %}
+
+{%- set windows = canonical_windows() %}
+
+{%- if windows | length == 0 %}
+
+-- Parse time: dim_period has not been read, so there is nothing to compare.
+select
+    cast(null as varchar) as macro_name,
+    cast(null as varchar) as period_label,
+    cast(null as varchar) as detail
+where 1 = 0
+
+{%- else %}
+
+-- Each relation is evaluated once per canonical window and unioned, rather
+-- than joined laterally to dim_period. See canonical_windows() for why the
+-- bounds are constants: neither warehouse will outer-join against a correlated
+-- table function, and Snowflake will not evaluate one per row at all.
+with m_summary as (
+    {{ range_over_periods('rp_summary_range', windows) }}
 ),
 m_category as (
-    select p.period_label, r.*
-    from periods p, lateral rp_category_range(p.period_start, p.period_end) r
+    {{ range_over_periods('rp_category_range', windows) }}
 ),
 m_weekday as (
-    select p.period_label, r.*
-    from periods p, lateral rp_weekday_range(p.period_start, p.period_end) r
+    {{ range_over_periods('rp_weekday_range', windows) }}
 ),
 m_hour as (
-    select p.period_label, r.*
-    from periods p, lateral rp_hour_range(p.period_start, p.period_end) r
+    {{ range_over_periods('rp_hour_range', windows) }}
 ),
 m_payments as (
-    select p.period_label, r.*
-    from periods p, lateral rp_payments_range(p.period_start, p.period_end) r
+    {{ range_over_periods('rp_payments_range', windows) }}
 ),
 m_items as (
-    select p.period_label, p.period_days, r.*
-    from periods p, lateral rp_items_range(p.period_start, p.period_end) r
+    {{ range_over_periods('rp_items_range', windows, with_period_days=true) }}
 ),
 
 summary_mismatch as (
@@ -56,8 +77,7 @@ summary_mismatch as (
         r.period_label,
         'headline KPIs' as detail
     from m_summary r
-    join {{ ref('kpi_summary') }} k on k.period_label = r.period_label
-    join periods p on p.period_label = r.period_label
+    join {{ kpi_summary }} k on k.period_label = r.period_label
     where r.orders                  is distinct from k.orders
        or r.units                   is distinct from k.units
        or r.gross_sales_cents       is distinct from k.gross_sales_cents
@@ -83,7 +103,7 @@ category_mismatch as (
         coalesce(r.period_label, k.period_label) as period_label,
         coalesce(r.category_name, k.category_name) as detail
     from m_category r
-    full outer join {{ ref('kpi_sales_by_category') }} k
+    full outer join {{ kpi_sales_by_category }} k
         on k.period_label = r.period_label
        and k.category_name = r.category_name
     where r.category_name           is distinct from k.category_name
@@ -101,7 +121,7 @@ weekday_mismatch as (
         coalesce(r.period_label, k.period_label) as period_label,
         cast(coalesce(r.day_of_week, k.day_of_week) as varchar) as detail
     from m_weekday r
-    full outer join {{ ref('kpi_sales_by_weekday') }} k
+    full outer join {{ kpi_sales_by_weekday }} k
         on k.period_label = r.period_label
        and k.day_of_week = r.day_of_week
     where r.day_name                is distinct from k.day_name
@@ -117,7 +137,7 @@ hour_mismatch as (
         coalesce(r.period_label, k.period_label) as period_label,
         cast(coalesce(r.hour_of_day, k.hour_of_day) as varchar) as detail
     from m_hour r
-    full outer join {{ ref('kpi_sales_by_hour') }} k
+    full outer join {{ kpi_sales_by_hour }} k
         on k.period_label = r.period_label
        and k.hour_of_day = r.hour_of_day
     where r.orders                  is distinct from k.orders
@@ -130,7 +150,7 @@ payments_mismatch as (
         coalesce(r.period_label, k.period_label) as period_label,
         coalesce(r.source_type, k.source_type) as detail
     from m_payments r
-    full outer join {{ ref('kpi_payment_methods') }} k
+    full outer join {{ kpi_payment_methods }} k
         on k.period_label = r.period_label
        and k.source_type = r.source_type
     where r.payments                is distinct from k.payments
@@ -145,7 +165,7 @@ items_mismatch as (
         coalesce(r.period_label, k.period_label) as period_label,
         coalesce(r.variation_id, k.variation_id) as detail
     from m_items r
-    full outer join {{ ref('kpi_item_sales') }} k
+    full outer join {{ kpi_item_sales }} k
         on k.period_label = r.period_label
        and k.variation_id = r.variation_id
     -- Bounded windows only; see the avg_weekly_units note above.
@@ -172,3 +192,5 @@ union all select * from weekday_mismatch
 union all select * from hour_mismatch
 union all select * from payments_mismatch
 union all select * from items_mismatch
+
+{%- endif %}

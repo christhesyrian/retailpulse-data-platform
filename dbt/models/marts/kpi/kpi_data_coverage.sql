@@ -28,9 +28,12 @@ select
     count(distinct sale_date) as days_with_sales,
     count(distinct date_trunc('week', sale_date)) as weeks_covered,
     -- complete ISO weeks only — what the forecast can actually fit on.
-    count(distinct sale_date) filter (
-        where date_trunc('week', sale_date) < date_trunc('week', current_date)
-    ) as days_in_complete_weeks,
+    -- Spelled as a conditional CASE rather than the SQL-standard aggregate
+    -- FILTER clause, which DuckDB accepts and Snowflake has no support for.
+    count(distinct case
+        when date_trunc('week', sale_date) < date_trunc('week', current_date)
+            then sale_date
+    end) as days_in_complete_weeks,
     count(distinct case
         when date_trunc('week', sale_date) < date_trunc('week', current_date)
             then date_trunc('week', sale_date)

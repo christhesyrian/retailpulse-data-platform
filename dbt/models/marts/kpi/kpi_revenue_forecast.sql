@@ -46,7 +46,7 @@ train as (
 ),
 
 train_weekday as (
-    select isodow(sale_date) as day_of_week, avg(net_sales_cents) as avg_cents
+    select {{ day_of_week_iso('sale_date') }} as day_of_week, avg(net_sales_cents) as avg_cents
     from train
     group by 1
 ),
@@ -76,7 +76,7 @@ scored as (
         w.avg_cents * t.trend_factor as predicted_cents,
         b.flat_avg_cents as baseline_cents
     from holdout h
-    join train_weekday w on w.day_of_week = isodow(h.sale_date)
+    join train_weekday w on w.day_of_week = {{ day_of_week_iso('h.sale_date') }}
     cross join train_trend t
     cross join train_baseline b
 ),
