@@ -47,7 +47,7 @@ select
     cast(sale_date as varchar) as sale_date
 from lines
 where sale_date <> cast(closed_at_local as date)
-   or date_diff('hour', closed_at_local, closed_at) not between 1 and 23
+   or {{ date_diff_in('hour', 'closed_at_local', 'closed_at') }} not between 1 and 23
 
 union all
 

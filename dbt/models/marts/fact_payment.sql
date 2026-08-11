@@ -14,13 +14,9 @@ select
     -- store's own calendar day. See fact_order_line for why the conversion
     -- lives in the fact rather than in each consumer.
     payments.created_at,
-    timezone(
-        coalesce(locations.timezone, 'UTC'), timezone('UTC', payments.created_at)
-    ) as created_at_local,
+    {{ to_local_time("coalesce(locations.timezone, 'UTC')", "payments.created_at") }} as created_at_local,
     cast(
-        timezone(
-            coalesce(locations.timezone, 'UTC'), timezone('UTC', payments.created_at)
-        ) as date
+        {{ to_local_time("coalesce(locations.timezone, 'UTC')", "payments.created_at") }} as date
     ) as pay_date,
     payments.updated_at,
     payments.status,

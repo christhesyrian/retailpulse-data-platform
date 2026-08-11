@@ -39,13 +39,9 @@ select
     -- store's zone. It is DST-correct, so the offset is -7 in July and -8 in
     -- January rather than a fixed shift. Locations with no timezone on file
     -- fall back to UTC, which is the old behaviour rather than a wrong one.
-    timezone(
-        coalesce(locations.timezone, 'UTC'), timezone('UTC', order_lines.closed_at)
-    ) as closed_at_local,
+    {{ to_local_time("coalesce(locations.timezone, 'UTC')", "order_lines.closed_at") }} as closed_at_local,
     cast(
-        timezone(
-            coalesce(locations.timezone, 'UTC'), timezone('UTC', order_lines.closed_at)
-        ) as date
+        {{ to_local_time("coalesce(locations.timezone, 'UTC')", "order_lines.closed_at") }} as date
     ) as sale_date,
     order_lines.quantity,
     order_lines.gross_sales_cents,

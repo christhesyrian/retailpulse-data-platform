@@ -52,6 +52,16 @@ orchestration = [
   "dagster-dbt==0.29.16",
   "dagster-webserver==1.13.16",
 ]
+# Cloud warehouse adapters, for the `prod` and `snowflake` dbt targets. Kept
+# out of `dev` deliberately: the project must stay clonable and runnable with no
+# cloud account at all, so CI and `make dbt-build` use DuckDB and never install
+# these. Pinned exactly, like everything else here — these resolve alongside
+# dbt-core 1.11.x without moving it, and a ranged pin is what would let that
+# drift silently on someone else's machine.
+warehouses = [
+  "dbt-bigquery==1.12.0",
+  "dbt-snowflake==1.12.0",
+]
 
 [project.scripts]
 retailpulse = "retailpulse.cli:main"

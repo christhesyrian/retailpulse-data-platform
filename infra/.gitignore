@@ -1,0 +1,7 @@
+# Terraform state can contain resource metadata and should never be committed.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!example.tfvars
+crash.log

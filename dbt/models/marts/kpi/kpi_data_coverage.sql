@@ -24,7 +24,7 @@ select
     min(sale_date) as first_sale_date,
     max(sale_date) as last_sale_date,
     max(closed_at_local) as last_order_at,
-    date_diff('day', min(sale_date), max(sale_date)) + 1 as days_covered,
+    {{ date_diff_in('day', 'min(sale_date)', 'max(sale_date)') }} + 1 as days_covered,
     count(distinct sale_date) as days_with_sales,
     count(distinct date_trunc('week', sale_date)) as weeks_covered,
     -- complete ISO weeks only — what the forecast can actually fit on.
@@ -41,5 +41,5 @@ select
     -- negative from the UTC offset. The clamp stays because current_date is
     -- the machine's date, which can still sit a day behind a store trading
     -- east of it.
-    greatest(0, date_diff('day', max(sale_date), current_date)) as days_since_last_sale
+    greatest(0, {{ date_diff_in('day', 'max(sale_date)', 'current_date') }}) as days_since_last_sale
 from lines

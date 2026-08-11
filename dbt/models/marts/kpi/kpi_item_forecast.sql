@@ -62,7 +62,7 @@ dense as (
         s.item_name,
         wk.week_start,
         coalesce(a.units_sold, 0) as units_sold,
-        date_diff('week', s.first_week, wk.week_start) as wk_idx
+        {{ date_diff_in('week', 's.first_week', 'wk.week_start') }} as wk_idx
     from item_span s
     join weeks wk on wk.week_start >= s.first_week
     left join actuals a

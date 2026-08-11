@@ -1,11 +1,61 @@
-# Local, credential-free dbt profile. DuckDB is an embedded database file
-# on disk -- no server, no account, nothing to leak. Paths come from env
-# vars set by the Makefile so this file has no machine-specific absolute
-# paths in it.
+# Three targets, one set of models.
+#
+# The same 33 models build unchanged against a file on disk, a cloud warehouse
+# and a second cloud warehouse. That portability is the point: it is what makes
+# "we could move warehouses" a demonstrated fact rather than a hopeful one, and
+# it is why the models contain no vendor-specific SQL that isn't behind a macro.
+#
+#   dev        DuckDB, local file. No account, no credentials, no cost. This is
+#              what CI runs and what `make dbt-build` uses, so the whole project
+#              stays runnable by anyone who clones it.
+#   prod       BigQuery. Where the deployed demo lives — free tier covers this
+#              dataset many times over.
+#   snowflake  Proof of portability, run against a trial. Kept in the file after
+#              the trial lapses because the config is the evidence.
+#
+# Every credential comes from the environment. Nothing secret is in this file,
+# which is why it can be committed; `.env` holds the values and is git-ignored.
+
 retailpulse:
-  target: dev
+  target: "{{ env_var('RETAILPULSE_DBT_TARGET', 'dev') }}"
   outputs:
+
     dev:
       type: duckdb
       path: "{{ env_var('RETAILPULSE_WAREHOUSE_PATH') }}"
       threads: 4
+
+    prod:
+      type: bigquery
+      method: service-account
+      keyfile: "{{ env_var('GOOGLE_APPLICATION_CREDENTIALS', '') }}"
+      project: "{{ env_var('BIGQUERY_PROJECT', '') }}"
+      dataset: "{{ env_var('BIGQUERY_DATASET', 'retailpulse') }}"
+      location: "{{ env_var('BIGQUERY_LOCATION', 'US') }}"
+      threads: 8
+      # A hard ceiling, not a warning. BigQuery bills by bytes scanned, and the
+      # failure mode of a free-tier demo is not a slow query — it is an
+      # accidental full-history scan in a loop that quietly costs real money.
+      # This whole warehouse is tens of megabytes, so a 1GB cap is ~20x
+      # headroom and still makes a runaway query fail loudly instead of bill.
+      maximum_bytes_billed: 1073741824
+      priority: interactive
+
+    snowflake:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT', '') }}"
+      user: "{{ env_var('SNOWFLAKE_USER', '') }}"
+      # Key-pair, not a password. Snowflake now requires MFA on new accounts and
+      # rejects single-factor password auth for programmatic connections
+      # outright ("none of your current MFA methods are supported for
+      # programmatic authentication"), so a password here cannot work no matter
+      # how correct it is. Key-pair is what a service account should use in any
+      # case: nothing interactive, nothing to type, and the private key never
+      # leaves the machine or enters this repo.
+      private_key_path: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PATH', '') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE', 'ACCOUNTADMIN') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE', 'COMPUTE_WH') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE', 'RETAILPULSE') }}"
+      schema: "{{ env_var('SNOWFLAKE_SCHEMA', 'MARTS') }}"
+      threads: 8
+      client_session_keep_alive: false

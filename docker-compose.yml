@@ -1,0 +1,76 @@
+# The whole platform, reproducible on a machine with nothing installed but
+# Docker:
+#
+#   docker compose up pipeline    # build a warehouse from synthetic data
+#   docker compose up dashboard   # then read it at localhost:8501
+#   docker compose up dagster     # or drive it at localhost:3000
+#
+# Everything here runs on the synthetic fixture and needs no Square credentials.
+# Extraction against a real store is deliberately not a service: it needs a
+# token and an explicit production opt-in, so it stays a command someone runs
+# knowingly rather than something `compose up` can start by accident.
+
+name: retailpulse
+
+services:
+  # One-shot: synthetic Bronze -> Silver -> dbt Gold, then exits. This is the
+  # "does it actually work" service, and the one to run first.
+  pipeline:
+    build: .
+    image: retailpulse:local
+    volumes:
+      - warehouse:/app/data
+    environment:
+      RAW_DATA_DIR: /app/data/bronze
+    command: >
+      bash -lc "
+        python3 scripts/generate_synthetic_bronze.py /app/data/bronze &&
+        retailpulse transform-silver &&
+        python3 scripts/generate_synthetic_vendor_costs.py &&
+        python3 scripts/ensure_dbt_inputs.py &&
+        dbt build --project-dir dbt --profiles-dir dbt &&
+        python3 scripts/smoke_dashboard_queries.py
+      "
+
+  dashboard:
+    build: .
+    image: retailpulse:local
+    depends_on:
+      pipeline:
+        # Wait for the warehouse to exist rather than racing it — the dashboard
+        # renders a "build it first" error against an empty volume, which looks
+        # like a broken image to anyone trying this for the first time.
+        condition: service_completed_successfully
+    volumes:
+      - warehouse:/app/data
+    ports:
+      - "8501:8501"
+    command: >
+      streamlit run dashboard/app.py
+        --server.port 8501
+        --server.address 0.0.0.0
+        --server.headless true
+
+  dagster:
+    build: .
+    image: retailpulse:local
+    depends_on:
+      pipeline:
+        condition: service_completed_successfully
+    volumes:
+      - warehouse:/app/data
+      - dagster_home:/app/dagster_home
+    ports:
+      - "3000:3000"
+    command: >
+      bash -lc "
+        dbt parse --project-dir dbt --profiles-dir dbt &&
+        dagster dev -m retailpulse.orchestration.definitions -h 0.0.0.0 -p 3000
+      "
+
+volumes:
+  # Named volumes, not bind mounts to ./data. The host's data/ holds ~800MB of
+  # real business data; mounting it into a container that also runs the
+  # synthetic fixture is how the two end up interleaved in the same Bronze tree.
+  warehouse:
+  dagster_home:

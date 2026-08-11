@@ -1,0 +1,17 @@
+# Never send real business data or credentials into the build context.
+.env
+.env.*
+!.env.example
+data/
+dagster_home/
+.venv/
+.git/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+dbt/target/
+dbt/logs/
+*.duckdb
+*.duckdb.wal
+HANDOFF.md

@@ -5,5 +5,5 @@
   variants are handled on top of this by the optional category_overrides map.
 #}
 {% macro normalize_category(col) %}
-    nullif(upper(trim(regexp_replace({{ col }}, '\s+', ' ', 'g'))), '')
+    nullif(upper(trim({{ regexp_replace_all(col, '\\s+', ' ') }})), '')
 {% endmacro %}
