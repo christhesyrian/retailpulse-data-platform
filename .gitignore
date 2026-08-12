@@ -31,3 +31,4 @@ dagster_home/
 
 # Local agent/editor scratch config, not part of the project.
 .claude/
+HANDOFF.md
