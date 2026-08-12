@@ -192,12 +192,29 @@ make dbt-build          # 125 pass, 1 intentional warning
 
 Gold tables land in `data/gold/warehouse.duckdb`. Open it with `duckdb data/gold/warehouse.duckdb` and query `main_marts.fact_order_line` or any `main_marts.kpi_*` model directly.
 
+Once it's set up, refreshing is one command:
+
+```bash
+make refresh              # pull the last 14 days, rebuild Silver and the warehouse
+make refresh DAYS=30      # wider window; overlap is free, Silver dedupes
+make refresh-all          # ...then push to Snowflake and BigQuery and check all three agree
+```
+
+Against a production token the extract step still requires `RETAILPULSE_ALLOW_PRODUCTION=1`, so `make refresh` run by accident stops with an explanation rather than calling the real store.
+
 ```bash
 make test lint security-check   # 58 pytest, ruff, credential scan
 make dagster-validate           # load every asset, check, job and schedule
 ```
 
 ### Other warehouses
+
+```bash
+make sync-cloud           # load Silver into every configured warehouse, then build each
+make compare-warehouses   # ...and require them to return the same answers
+```
+
+Either one skips a warehouse whose credentials aren't in the environment, so a clone with no cloud accounts runs both happily and is told why nothing happened. The individual steps, if you want them:
 
 ```bash
 python3 scripts/load_silver_to_snowflake.py     # or load_silver_to_bigquery.py
