@@ -54,9 +54,19 @@ models:
       re-deriving a date from UTC. See tests/assert_local_time_conversion.sql.
     columns:
       - name: order_line_key
+        description: >
+          Surrogate key: an MD5 of (order_id, line_item_uid). A hash rather
+          than row_number() because this model is incremental, and a
+          positional key is only stable while the whole table is rebuilt at
+          once.
         data_tests:
           - not_null
           - unique
+      - name: order_updated_at
+        description: >
+          When Square last modified the order. The incremental watermark is
+          read from this column, because an amendment changes it while leaving
+          closed_at in the past.
       - name: square_order_id
         data_tests:
           - not_null

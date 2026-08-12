@@ -19,7 +19,11 @@ dependencies = [
   "python-dotenv>=1.0,<2.0",
   "pydantic>=2.7,<3.0",
   "pydantic-settings>=2.2,<3.0",
-  "duckdb>=1.0,<2.0",
+  # >=1.4, not >=1.0: fact_order_line is incremental with the `merge`
+  # strategy, which dbt-duckdb only offers on DuckDB 1.4 and above.
+  # An older DuckDB fails the build with "merge is not a valid
+  # incremental strategy" rather than silently doing something else.
+  "duckdb>=1.4,<2.0",
 ]
 
 [project.optional-dependencies]

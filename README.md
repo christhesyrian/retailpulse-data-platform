@@ -32,7 +32,7 @@ No credentials, no cloud account, no Square access. `make demo-data` generates a
 
 > On a fresh clone this is safe. If you have already extracted real data, note that `make demo-data` writes synthetic pages *alongside* whatever is in `data/bronze/` rather than replacing it, and the Silver rebuild then reads both — so point it at an empty tree, or clear Bronze first.
 
-The hosted demo does the same thing on boot: [`streamlit_app.py`](streamlit_app.py) generates the fixture, runs the Bronze→Silver transform, and builds all 33 dbt models and 93 tests before the first page renders — about 15 seconds, once per container. **No real business data is present in this repository or reachable from the demo.**
+The hosted demo does the same thing on boot: [`streamlit_app.py`](streamlit_app.py) generates the fixture, runs the Bronze→Silver transform, and builds all 33 dbt models and 94 tests before the first page renders — about 15 seconds, once per container. **No real business data is present in this repository or reachable from the demo.**
 
 ## Architecture
 
@@ -67,7 +67,7 @@ make dagster   # asset graph, run history and backfills at localhost:3000
 | Extraction | Implemented | Cursor-paginated, bounded retry/backoff, Sandbox by default with an explicit production opt-in |
 | Bronze | Implemented | Immutable, partitioned, local, Git-ignored |
 | Silver | Implemented | Deduplicated, flattened Parquet, rebuilt from Bronze |
-| Gold | Implemented | 33 `dbt` models — dimensions, facts, and the KPI layer |
+| Gold | Implemented | 33 `dbt` models — dimensions, facts, and the KPI layer; `fact_order_line` is incremental |
 | Forecasting | Implemented | Per-item units (4 weeks) and revenue (31 days), both backtested |
 | Dashboard | Implemented | Streamlit, reading only tested models |
 | Orchestration | Implemented | Dagster: daily-partitioned ingest, retries, freshness and timezone asset checks, two schedules |
@@ -75,11 +75,11 @@ make dagster   # asset graph, run history and backfills at localhost:3000
 
 ## The parts worth reviewing
 
-If you are assessing this as engineering rather than as a dashboard, these are the four things to look at.
+If you are assessing this as engineering rather than as a dashboard, these are the five things to look at.
 
 ### One set of models, three warehouses — and a script that proves it
 
-`dbt build` runs green on **DuckDB, Snowflake and BigQuery**: all 126 nodes, same models, same tests. Dialect differences are isolated behind adapter-dispatched macros in [`dbt/macros/portable.sql`](dbt/macros/portable.sql), and the parameterized range API in [`dbt/macros/range_api.sql`](dbt/macros/range_api.sql) publishes one body as a DuckDB table macro, a Snowflake SQL UDTF or a BigQuery table function.
+`dbt build` runs green on **DuckDB, Snowflake and BigQuery**: all 127 nodes, same models, same tests. Dialect differences are isolated behind adapter-dispatched macros in [`dbt/macros/portable.sql`](dbt/macros/portable.sql), and the parameterized range API in [`dbt/macros/range_api.sql`](dbt/macros/range_api.sql) publishes one body as a DuckDB table macro, a Snowflake SQL UDTF or a BigQuery table function.
 
 The point is what that exercise turns up. A green build on three warehouses only proves the SQL *parses* on each — so [`scripts/compare_warehouses.py`](scripts/compare_warehouses.py) runs the same twelve queries against all three and demands the same answers back:
 
@@ -93,9 +93,9 @@ Ten of the twelve checks require exact agreement. Two allow 0.01%, documented in
 
 ### Data quality is the point, not a section at the end
 
-**93 dbt tests** and **58 pytest tests** run on every push, plus two Dagster **asset checks** that catch what tests cannot.
+**94 dbt tests** and **75 pytest tests** run on every push, plus two Dagster **asset checks** that catch what tests cannot.
 
-The distinction the suite is built around: a schema test tells you a column is non-null; it does not tell you the number is *right*. So alongside the `unique`/`not_null`/`accepted_values` coverage there are six singular tests asserting business invariants — that a period never reports more sales than the period containing it, that every order's recorded total equals what was collected, that the custom-range API agrees exactly with the precomputed models, that no forecast is NaN or negative, that the calendar spine covers every day with sales.
+The distinction the suite is built around: a schema test tells you a column is non-null; it does not tell you the number is *right*. So alongside the `unique`/`not_null`/`accepted_values` coverage there are seven singular tests asserting business invariants — that a period never reports more sales than the period containing it, that every order's recorded total equals what was collected, that the custom-range API agrees exactly with the precomputed models, that no forecast is NaN or negative, that the calendar spine covers every day with sales, and that the incremental fact table still matches its source.
 
 The asset checks cover the failure modes that leave everything green:
 
@@ -117,6 +117,29 @@ That is the theme of the test suite generally: the failures worth guarding again
 The precomputed `kpi_*` models are built at `(period, key)` grain, which is exactly what makes an arbitrary window impossible — there is no row for "March 3rd to April 11th". Rather than move that aggregation into the dashboard, the same SQL is published as parameterized warehouse relations taking `(start, end)`.
 
 That creates two ways to compute the same KPI, so [`assert_range_macros_match_periods`](dbt/tests/assert_range_macros_match_periods.sql) requires them to agree exactly on all five canonical windows. It caught 168 real mismatches the first time it ran, and it runs on every warehouse.
+
+### The incremental model, and the filter that would have been wrong
+
+`fact_order_line` is the one **incremental** model — the largest table, and the reason a full rebuild of everything else stays cheap. The obvious implementation is:
+
+```sql
+where closed_at > (select max(closed_at) from this_table)
+```
+
+It compiles, it runs fast, and it is wrong. Square lets an order be amended after it closes — a refund, a corrected price — and that edit changes a row whose `closed_at` is still last Tuesday. A filter on "newer than the newest thing I have" **never sees it**. The warehouse drifts from the source and nothing errors.
+
+So the filter is on `order_updated_at` — when the record *changed*, not when the sale *happened* — with a seven-day lookback for the gap between an edit landing in Square and the extract that collects it. The strategy is `merge` on a hash of the natural key, which is also why the surrogate key is no longer `row_number()`: a positional key is only stable while the whole table is rebuilt at once.
+
+Two things keep it honest:
+
+- [`assert_fact_matches_source`](dbt/tests/assert_fact_matches_source.sql) compares the fact table against staging on every build — row counts, distinct keys and totals. That catches all three ways an incremental table drifts: rows missed, rows duplicated, rows left stale.
+- [`scripts/verify_incremental.py`](scripts/verify_incremental.py) proves the hard case end to end. It builds a warehouse, runs incrementally with no changes (must be a no-op), amends an order that closed months ago, runs incrementally again, and requires both that the edit arrived **and** that the result is identical to a full rebuild, row for row.
+
+```bash
+python3 scripts/verify_incremental.py
+```
+
+The known limitation, stated rather than hidden: `merge` matches on key, so a line item *removed* upstream leaves a stale row. Square models voids as a state change rather than a deletion, so it hasn't come up here — and `assert_fact_matches_source` would fail if it did.
 
 ### A forecast that reports its own error
 
@@ -232,7 +255,6 @@ All 126 nodes build green with Silver read from object storage.
 ## What's next
 
 - Schema contracts at the Bronze→Silver boundary — Pydantic at the edge, dbt `contract: enforced` on staging, source freshness
-- Incremental `fact_order_line` with a lookback window, since Square can amend an order after close
 - A second source: supplier invoices, which forces real entity resolution between invoice text and the Square catalog
 
 See [`docs/project-charter.md`](docs/project-charter.md) for the charter, [`docs/data-dictionary.md`](docs/data-dictionary.md) for the model reference, and [`docs/orchestration.md`](docs/orchestration.md) for the asset graph.

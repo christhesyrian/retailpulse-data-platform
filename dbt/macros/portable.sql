@@ -487,3 +487,41 @@ extract(week from {{ date_expr }})
 {% macro bigquery__week_of_year(date_expr) -%}
 extract(isoweek from {{ date_expr }})
 {%- endmacro %}
+
+
+{#-
+  A deterministic surrogate key built from a row's natural key.
+
+  "Deterministic" is the whole requirement. The obvious way to number rows is
+  `row_number() over (...)`, and it works right up until the table stops being
+  rebuilt in one go: an incremental run sees only new rows, starts counting at
+  1 again, and either collides with existing keys or renumbers history out
+  from under everything that referenced it. A hash of the natural key gives
+  the same row the same key forever, no matter how much of the table is being
+  built at the time.
+
+  The separator matters. Concatenating ('ab', 'c') and ('a', 'bc') without one
+  produces the same string and therefore the same key for two different rows.
+
+  MD5 rather than a cryptographic hash because this is an identity, not a
+  security boundary; and hex rather than raw bytes because BigQuery's MD5
+  returns BYTES while DuckDB and Snowflake return the hex string directly.
+-#}
+{% macro surrogate_key(columns) %}
+  {{ return(adapter.dispatch('surrogate_key', 'retailpulse')(columns)) }}
+{% endmacro %}
+
+{% macro _surrogate_key_input(columns) -%}
+{%- for column in columns -%}
+coalesce(cast({{ column }} as {{ string_type() }}), '')
+{%- if not loop.last %} || '|' || {% endif %}
+{%- endfor -%}
+{%- endmacro %}
+
+{% macro default__surrogate_key(columns) -%}
+md5({{ _surrogate_key_input(columns) }})
+{%- endmacro %}
+
+{% macro bigquery__surrogate_key(columns) -%}
+to_hex(md5({{ _surrogate_key_input(columns) }}))
+{%- endmacro %}
