@@ -80,6 +80,15 @@ jobs:
           RETAILPULSE_INPUT_DIR: ${{ github.workspace }}/data/input
           RETAILPULSE_WAREHOUSE_PATH: ${{ github.workspace }}/data/gold/warehouse.duckdb
 
+      - name: Verify the incremental build
+        # Every other step here starts from an empty warehouse, so the build
+        # above only ever exercises fact_order_line's *first* run — the
+        # incremental path, and the late-arriving-edit case it exists to
+        # handle, would otherwise never be tested. This runs that scenario
+        # against its own fixture in a temp directory: no credentials, no
+        # dependency on the warehouse the previous steps built.
+        run: python3 scripts/verify_incremental.py
+
       - name: Smoke-test dashboard KPI queries
         run: python3 scripts/smoke_dashboard_queries.py
         env:
