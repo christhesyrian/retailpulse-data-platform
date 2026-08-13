@@ -17,7 +17,21 @@ overrides as (
 )
 
 select
-    row_number() over (order by items.variation_id) as item_key,
+    -- A hash of the catalog id, NOT row_number().
+    --
+    -- row_number() here was a live data-corruption bug once fact_order_line
+    -- became incremental. The rank is recomputed on every build, so adding a
+    -- catalog item shifts the key of every item that sorts after it — while
+    -- fact rows merged on earlier runs keep the number they were given. After
+    -- one refresh that added 17 items, 135,534 of 153,314 fact rows pointed at
+    -- the wrong item, and category totals were wrong by up to 5x (SCRATCHER
+    -- reported $56k against an actual $286k).
+    --
+    -- Nothing failed. The `relationships` test passed the whole time, because
+    -- the keys it checked all still existed in dim_item — they had simply
+    -- stopped meaning the same thing. assert_fact_item_key_resolves is the
+    -- test that actually catches this.
+    {{ surrogate_key(['items.variation_id']) }} as item_key,
     items.variation_id as square_catalog_object_id,
     items.item_name,
     items.variation_name,

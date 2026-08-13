@@ -22,10 +22,17 @@ configured fails.
 Run it after `make silver`, or use `make sync-cloud` which does both:
 
     python3 scripts/sync_warehouses.py
+    python3 scripts/sync_warehouses.py --full-refresh
+
+`--full-refresh` is needed whenever an incremental model's shape changes —
+a new column the watermark reads, or a surrogate key that changes type. A
+plain build will not rewrite rows it already has, so the old and new
+definitions would coexist in one table.
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import subprocess
 import sys
@@ -66,6 +73,13 @@ def run(command: list[str], env: dict[str, str]) -> tuple[bool, str]:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--full-refresh", action="store_true",
+        help="Rebuild incremental models from scratch. Needed when a model's "
+             "shape changes — a new column, or a key that changes type.")
+    args = parser.parse_args()
+
     silver = Path(os.environ.get("RETAILPULSE_SILVER_DIR", "data/silver"))
     if not silver.is_dir() or not any(silver.glob("*.parquet")):
         print(f"No Silver Parquet found at {silver} — run `make silver` first.", file=sys.stderr)
@@ -92,14 +106,14 @@ def main() -> int:
             if line.strip().startswith("loaded"):
                 print(f"  {line.strip()}")
 
-        print(f"  {label} — building models…")
+        print(f"  {label} — building models{' (full refresh)' if args.full_refresh else ''}…")
         env = os.environ.copy()
         env["RETAILPULSE_DBT_TARGET"] = target
-        ok, output = run(
-            [sys.executable, "-m", "dbt.cli.main", "build",
-             "--project-dir", str(ROOT / "dbt"), "--profiles-dir", str(ROOT / "dbt")],
-            env,
-        )
+        command = [sys.executable, "-m", "dbt.cli.main", "build",
+                   "--project-dir", str(ROOT / "dbt"), "--profiles-dir", str(ROOT / "dbt")]
+        if args.full_refresh:
+            command.append("--full-refresh")
+        ok, output = run(command, env)
         summary = next(
             (ln.split("Done.")[-1].strip() for ln in output.splitlines() if "Done." in ln), ""
         )

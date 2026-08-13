@@ -50,6 +50,12 @@ refresh:
 
 # Bring Snowflake and BigQuery level with the Silver that `refresh` just built.
 # Warehouses with no credentials in the environment are skipped, not failed.
+#
+# When an incremental model changes shape — a new column, or a key that changes
+# type — a plain build will not rewrite the rows it already has, and the old
+# and new definitions end up coexisting in one table. Pass the flag then:
+#
+#   python3 scripts/sync_warehouses.py --full-refresh
 sync-cloud:
 	. .venv/bin/activate && $(DBT_ENV) python3 scripts/sync_warehouses.py
 
