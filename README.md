@@ -32,7 +32,7 @@ No credentials, no cloud account, no Square access. `make demo-data` generates a
 
 > On a fresh clone this is safe. If you have already extracted real data, note that `make demo-data` writes synthetic pages *alongside* whatever is in `data/bronze/` rather than replacing it, and the Silver rebuild then reads both — so point it at an empty tree, or clear Bronze first.
 
-The hosted demo does the same thing on boot: [`streamlit_app.py`](streamlit_app.py) generates the fixture, runs the Bronze→Silver transform, and builds all 33 dbt models and 94 tests before the first page renders — about 15 seconds, once per container. **No real business data is present in this repository or reachable from the demo.**
+The hosted demo does the same thing on boot: [`streamlit_app.py`](streamlit_app.py) generates the fixture, runs the Bronze→Silver transform, and builds all 34 dbt models and 102 tests before the first page renders — about 15 seconds, once per container. **No real business data is present in this repository or reachable from the demo.**
 
 ## Architecture
 
@@ -51,7 +51,7 @@ A **medallion architecture** — Bronze (immutable raw JSON), Silver (a normalis
 
 Gold is a **star schema**. Four fact tables (`fact_order_line`, `fact_payment`, `fact_inventory_snapshot`, `fact_order_line_margin`) join conformed dimensions (`dim_item`, `dim_location`, `dim_date`, `dim_vendor`, `dim_period`) on surrogate keys, and each model declares its grain.
 
-The pipeline runs as a **Dagster asset graph** — 42 assets, two scheduled jobs and two asset checks — with the dbt project loaded through `dagster-dbt`, so all 33 models appear as individual assets with **column-level data lineage** rather than one opaque "run dbt" step. Orders and payments are partitioned by **store-local day**, so one day is the unit of both scheduling and backfill.
+The pipeline runs as a **Dagster asset graph** — 42 assets, two scheduled jobs and two asset checks — with the dbt project loaded through `dagster-dbt`, so all 34 models appear as individual assets with **column-level data lineage** rather than one opaque "run dbt" step. Orders and payments are partitioned by **store-local day**, so one day is the unit of both scheduling and backfill.
 
 **Re-running is safe.** Bronze is append-only and immutable: each page is written to a partitioned path with the run id in the filename, and the writer refuses to overwrite. Silver then deduplicates to the latest version of each record, which makes the Silver and Gold rebuild **idempotent** — the warehouse is a pure function of Bronze, so running the pipeline twice produces the same warehouse rather than double-counting. That property is what makes a **backfill** of any store-day range a safe operation rather than a careful one.
 
@@ -67,7 +67,7 @@ make dagster   # asset graph, run history and backfills at localhost:3000
 | Extraction | Implemented | Cursor-paginated, bounded retry/backoff, Sandbox by default with an explicit production opt-in |
 | Bronze | Implemented | Immutable, partitioned, local, Git-ignored |
 | Silver | Implemented | Deduplicated, flattened Parquet, rebuilt from Bronze |
-| Gold | Implemented | 33 `dbt` models — dimensions, facts, and the KPI layer; `fact_order_line` is incremental |
+| Gold | Implemented | 34 `dbt` models — dimensions, facts, and the KPI layer; `fact_order_line` is incremental |
 | Forecasting | Implemented | Per-item units (4 weeks) and revenue (31 days), both backtested |
 | Dashboard | Implemented | Streamlit, reading only tested models |
 | Orchestration | Implemented | Dagster: daily-partitioned ingest, retries, freshness and timezone asset checks, two schedules |
@@ -75,11 +75,11 @@ make dagster   # asset graph, run history and backfills at localhost:3000
 
 ## The parts worth reviewing
 
-If you are assessing this as engineering rather than as a dashboard, these are the five things to look at.
+If you are assessing this as engineering rather than as a dashboard, these are the six things to look at.
 
 ### One set of models, three warehouses — and a script that proves it
 
-`dbt build` runs green on **DuckDB, Snowflake and BigQuery**: all 127 nodes, same models, same tests. Dialect differences are isolated behind adapter-dispatched macros in [`dbt/macros/portable.sql`](dbt/macros/portable.sql), and the parameterized range API in [`dbt/macros/range_api.sql`](dbt/macros/range_api.sql) publishes one body as a DuckDB table macro, a Snowflake SQL UDTF or a BigQuery table function.
+`dbt build` runs green on **DuckDB, Snowflake and BigQuery**: all 137 nodes, same models, same tests. Dialect differences are isolated behind adapter-dispatched macros in [`dbt/macros/portable.sql`](dbt/macros/portable.sql), and the parameterized range API in [`dbt/macros/range_api.sql`](dbt/macros/range_api.sql) publishes one body as a DuckDB table macro, a Snowflake SQL UDTF or a BigQuery table function.
 
 The point is what that exercise turns up. A green build on three warehouses only proves the SQL *parses* on each — so [`scripts/compare_warehouses.py`](scripts/compare_warehouses.py) runs the same twelve queries against all three and demands the same answers back:
 
@@ -93,9 +93,9 @@ Ten of the twelve checks require exact agreement. Two allow 0.01%, documented in
 
 ### Data quality is the point, not a section at the end
 
-**94 dbt tests** and **75 pytest tests** run on every push, plus two Dagster **asset checks** that catch what tests cannot.
+**102 dbt tests** and **75 pytest tests** run on every push, plus two Dagster **asset checks** that catch what tests cannot.
 
-The distinction the suite is built around: a schema test tells you a column is non-null; it does not tell you the number is *right*. So alongside the `unique`/`not_null`/`accepted_values` coverage there are seven singular tests asserting business invariants — that a period never reports more sales than the period containing it, that every order's recorded total equals what was collected, that the custom-range API agrees exactly with the precomputed models, that no forecast is NaN or negative, that the calendar spine covers every day with sales, and that the incremental fact table still matches its source.
+The distinction the suite is built around: a schema test tells you a column is non-null; it does not tell you the number is *right*. So alongside the `unique`/`not_null`/`accepted_values` coverage there are eleven singular tests asserting business invariants — that a period never reports more sales than the period containing it, that every order's recorded total equals what was collected, that the custom-range API agrees exactly with the precomputed models, that no forecast is NaN or negative, that the calendar spine covers every day with sales, and that the incremental fact table still matches its source.
 
 The asset checks cover the failure modes that leave everything green:
 
@@ -140,6 +140,29 @@ python3 scripts/verify_incremental.py
 ```
 
 The known limitation, stated rather than hidden: `merge` matches on key, so a line item *removed* upstream leaves a stale row. Square models voids as a state change rather than a deletion, so it hasn't come up here — and `assert_fact_matches_source` would fail if it did.
+
+### A dimension that remembers what things used to be
+
+`dim_item` is Type 1 in the sense that matters: one row per item, showing what it is now. Rename an item and last year's sales retroactively acquire the new name. For most questions that's what you want.
+
+`dim_item_history` is the **Type 2** version — one row per item *per version*, with `valid_from` / `valid_to`, built from a [dbt snapshot](dbt/snapshots/scd_catalog_items.yml). It answers what an item was called, priced and categorised **at the time something happened to it**.
+
+Two keys, and the distinction is the whole thing:
+
+- **`item_key`** identifies the item, stable across every version. Facts carry this.
+- **`item_version_key`** identifies one version. Unique in the history table.
+
+Which means joining a fact to the history on `item_key` alone **fans out across versions** — revenue quietly doubles for anything that's ever been renamed, and nothing fails. The join needs a validity predicate, and [`assert_item_history_has_no_fanout`](dbt/tests/assert_item_history_has_no_fanout.sql) asserts exactly one version is in effect per fact row.
+
+The snapshot uses the `check` strategy rather than trusting Square's `updated_at`. This project has been burned once already by assuming a vendor timestamp means what it looks like it means; comparing the columns costs a scan of a 7,000-row dimension and cannot be wrong about whether values differ.
+
+```bash
+python3 scripts/verify_scd_history.py
+```
+
+On a fresh warehouse every item has one version, so the history tests pass without demonstrating anything — a one-point timeline is trivially contiguous. That script changes an item and requires the dimension to version it: old row closed rather than overwritten, new row open, and an as-of lookup returning the values that were in effect *then*. It runs in CI.
+
+**Honest limitation:** history accumulates from the first snapshot forward. Silver deduplicates to the latest version of each record — that's what makes rebuilds idempotent — so the past is already gone by the time Gold sees it. There is no backfilling this.
 
 ### A forecast that reports its own error
 
@@ -272,6 +295,7 @@ All 126 nodes build green with Silver read from object storage.
 ## What's next
 
 - Schema contracts at the Bronze→Silver boundary — Pydantic at the edge, dbt `contract: enforced` on staging, source freshness
+- Slowly-changing dimensions beyond items, if locations or vendors ever start changing
 - A second source: supplier invoices, which forces real entity resolution between invoice text and the Square catalog
 
 See [`docs/project-charter.md`](docs/project-charter.md) for the charter, [`docs/data-dictionary.md`](docs/data-dictionary.md) for the model reference, and [`docs/orchestration.md`](docs/orchestration.md) for the asset graph.

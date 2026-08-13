@@ -1,0 +1,57 @@
+version: 2
+
+snapshots:
+  # Type 2 history for the Square catalog.
+  #
+  # Silver deliberately deduplicates to the latest version of each record —
+  # that is what makes the warehouse a pure function of Bronze and a rebuild
+  # idempotent. The cost is that history is destroyed before it reaches Gold:
+  # rename an item and yesterday's name is simply gone.
+  #
+  # A snapshot is the one thing in dbt that is allowed to be stateful. It reads
+  # the current rows, compares them against what it stored last time, and
+  # closes off the previous version rather than overwriting it. That makes it
+  # the only object here that must NOT be rebuilt from scratch — dropping it
+  # loses the history, which is why dim_item_history warns about
+  # `--full-refresh`.
+  #
+  # History therefore starts accumulating from the first run, not from the
+  # beginning of trade. There is no way around that short of Bronze having
+  # captured every intermediate state, and it captures one snapshot per
+  # extract rather than every edit.
+  - name: scd_catalog_items
+    relation: ref('stg_catalog_items')
+    description: >
+      One row per catalog item variation per version. Closed versions carry a
+      valid_to; the live one has valid_to null.
+    config:
+      unique_key: variation_id
+
+      # `check`, not `timestamp`, even though Square publishes an updated_at.
+      #
+      # The timestamp strategy is cheaper — it trusts the source to bump a
+      # column whenever anything changes. This project has already been bitten
+      # once by trusting a vendor timestamp to mean what it looks like it
+      # means (see fact_order_line on closed_at), and an updated_at that moves
+      # for an unrelated reason would mint a version with no actual change in
+      # it, while one that fails to move would lose a real change silently.
+      #
+      # Comparing the columns costs a scan of a 7,000-row dimension and cannot
+      # be wrong about whether the values differ.
+      strategy: check
+      check_cols:
+        - item_name
+        - variation_name
+        - category_name
+        - price_cents
+        - sku
+        - is_deleted
+
+      # The default names are dbt_valid_from / dbt_valid_to / dbt_scd_id, which
+      # leak the tool into the warehouse's vocabulary. These are the names the
+      # models and anyone querying by hand will actually use.
+      snapshot_meta_column_names:
+        dbt_valid_from: valid_from
+        dbt_valid_to: valid_to
+        dbt_scd_id: item_version_key
+        dbt_updated_at: version_captured_at

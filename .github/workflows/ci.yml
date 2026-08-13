@@ -89,6 +89,13 @@ jobs:
         # dependency on the warehouse the previous steps built.
         run: python3 scripts/verify_incremental.py
 
+      - name: Verify the Type 2 item history
+        # A fresh warehouse has one version of every item, so the history
+        # tests pass without proving anything — a one-point timeline is
+        # trivially contiguous. This changes an item and requires the
+        # dimension to version it rather than overwrite.
+        run: python3 scripts/verify_scd_history.py
+
       - name: Smoke-test dashboard KPI queries
         run: python3 scripts/smoke_dashboard_queries.py
         env:

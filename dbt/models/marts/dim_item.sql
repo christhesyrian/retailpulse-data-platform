@@ -1,57 +1,39 @@
--- NOTE: valid_from/valid_to are placeholder SCD2 columns matching
--- sql/warehouse_schema.sql's target shape; real history tracking (dbt
--- snapshots) is future work. is_current here is derived from Square's own
--- is_deleted flag rather than hardcoded, since we do track that signal.
+-- The item dimension as it stands today: one row per catalog item variation.
 --
--- category_name is NORMALIZED here so every downstream report rolls up
--- consistently: generic uppercase/trim/whitespace collapse (merges
--- 'Beer'/'BEER'), then the optional category_overrides map (merges typos and
--- synonyms, e.g. a mis-spelled 'BEVERGE' -> 'BEVERAGE'). category_name_raw
--- preserves the original for traceability. The Square catalog is never modified.
-with items as (
-    select * from {{ ref('stg_catalog_items') }}
-),
-
-overrides as (
-    select raw_norm, canonical_category from {{ ref('stg_category_overrides') }}
-)
-
+-- This is now the current slice of `dim_item_history`, which holds the full
+-- Type 2 history. Everything that reads a fact table joins here, because a
+-- fact carries `item_key` and this table has exactly one row per item_key —
+-- joining straight to the history would fan a fact row out across every
+-- version of its item.
+--
+-- The category normalisation and the lottery flag live in dim_item_history,
+-- deliberately. They used to live here, and duplicating them across the two
+-- would let a current-state report and a point-in-time report disagree about
+-- what a category is.
+--
+-- valid_from / valid_to are real now. They used to be `current_timestamp` and
+-- `null` — placeholder columns matching the shape in sql/warehouse_schema.sql
+-- while claiming a history that did not exist. valid_from is the moment this
+-- version of the item first appeared in a snapshot, and valid_to is null
+-- because, by definition, this is the version that has not been superseded.
 select
-    -- A hash of the catalog id, NOT row_number().
-    --
-    -- row_number() here was a live data-corruption bug once fact_order_line
-    -- became incremental. The rank is recomputed on every build, so adding a
-    -- catalog item shifts the key of every item that sorts after it — while
-    -- fact rows merged on earlier runs keep the number they were given. After
-    -- one refresh that added 17 items, 135,534 of 153,314 fact rows pointed at
-    -- the wrong item, and category totals were wrong by up to 5x (SCRATCHER
-    -- reported $56k against an actual $286k).
-    --
-    -- Nothing failed. The `relationships` test passed the whole time, because
-    -- the keys it checked all still existed in dim_item — they had simply
-    -- stopped meaning the same thing. assert_fact_item_key_resolves is the
-    -- test that actually catches this.
-    {{ surrogate_key(['items.variation_id']) }} as item_key,
-    items.variation_id as square_catalog_object_id,
-    items.item_name,
-    items.variation_name,
-    coalesce(o.canonical_category, {{ normalize_category('items.category_name') }})
-        as category_name,
-    items.category_name as category_name_raw,
-    -- Lottery and scratchers are always the top sellers by units, because the
-    -- customer picks the store rather than the product and volume follows the
-    -- jackpot. Ranking them alongside merchandise buries every item the owner
-    -- could actually act on. The flag lives here, driven by the
-    -- `lottery_categories` var, so "what counts as lottery" is one tested
-    -- definition rather than a filter re-typed in each place that needs it.
-    coalesce(o.canonical_category, {{ normalize_category('items.category_name') }})
-        in ({{ "'" ~ var('lottery_categories') | join("', '") ~ "'" }}) as is_lottery,
-    items.sku,
-    items.price_cents as price_amount_cents,
-    items.currency,
-    current_timestamp as valid_from,
-    cast(null as timestamp) as valid_to,
-    not items.is_deleted as is_current
-from items
-left join overrides o
-    on {{ normalize_category('items.category_name') }} = o.raw_norm
+    item_key,
+    square_catalog_object_id,
+    item_name,
+    variation_name,
+    category_name,
+    category_name_raw,
+    is_lottery,
+    sku,
+    price_amount_cents,
+    currency,
+    valid_from,
+    valid_to,
+    -- `is_current` here means what it always meant: Square has not deleted
+    -- this item. It is NOT the SCD2 sense of "latest version" — every row in
+    -- this table is a latest version, so that flag would be a constant. The
+    -- history table uses the name in the SCD2 sense; this is the reason the
+    -- two are separate models rather than one with a filter.
+    not is_deleted as is_current
+from {{ ref('dim_item_history') }}
+where is_current

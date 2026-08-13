@@ -35,9 +35,17 @@ models:
           - unique
 
   - name: dim_item
-    description: One row per catalog item variation, joined against its item and category.
+    description: >
+      One row per catalog item variation, as it stands today — the current
+      slice of dim_item_history. Facts join here, not to the history, because
+      this has exactly one row per item_key.
     columns:
       - name: item_key
+        description: >
+          Surrogate key: an MD5 of the Square catalog id. A hash rather than
+          row_number(), which shifted whenever a catalog item was inserted and
+          left already-merged fact rows pointing at the wrong item. See
+          tests/assert_fact_item_key_resolves.sql.
         data_tests:
           - not_null
           - unique
@@ -45,6 +53,31 @@ models:
         data_tests:
           - not_null
           - unique
+
+  - name: dim_item_history
+    description: >
+      Type 2 history: one row per item per version, with valid_from/valid_to.
+      Answers what an item was called, priced and categorised at a point in
+      time. Joining a fact here needs a validity predicate as well as
+      item_key, or the fact fans out across versions — see
+      tests/assert_item_history_has_no_fanout.sql.
+    columns:
+      - name: item_version_key
+        description: One version of one item. Unique here; item_key is not.
+        data_tests:
+          - not_null
+          - unique
+      - name: item_key
+        description: >
+          The item, stable across all its versions. Matches dim_item.item_key.
+        data_tests:
+          - not_null
+      - name: valid_from
+        data_tests:
+          - not_null
+      - name: version_number
+        data_tests:
+          - not_null
 
   - name: fact_order_line
     description: >

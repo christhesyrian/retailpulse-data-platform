@@ -23,3 +23,11 @@ models:
     marts:
       +materialized: table
       +schema: marts
+
+# Snapshots live in their own schema because they are the one stateful thing
+# here. Every model can be dropped and rebuilt from Bronze; a snapshot cannot,
+# because it *is* the record of what changed and when. Keeping them apart makes
+# that distinction visible to anyone poking around the warehouse.
+snapshots:
+  retailpulse:
+    +schema: snapshots
