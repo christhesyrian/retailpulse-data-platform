@@ -1,0 +1,167 @@
+// RetailPulse — core DAX measures
+//
+// Paste these into a Power BI semantic model built over demo_marts (or the
+// Parquet export). Every one has a counterpart in dbt/models/marts/kpi/, and
+// README.md in this directory maps them pair by pair.
+//
+// TWO CONVENTIONS, both load-bearing.
+//
+// 1. Money has a measure in integer cents AND one in dollars. The cents
+//    measure is what reconciles against SQL — integers, no float comparison,
+//    no rounding to argue about. The dollar measure is the only thing a visual
+//    should ever display, and it is where the single divide-by-100 lives. That
+//    mirrors the warehouse convention: cents until the presentation layer.
+//
+// 2. These assume fact_order_line was loaded WITH BLANK sale_date EXCLUDED.
+//    Every kpi_* model opens with `where sale_date is not null`; Square returns
+//    a few order lines it never closed, which are genuinely undated. Production
+//    has 19 such lines worth $228.31. DAX will not drop them for you, and with
+//    no date filter applied they land in the blank date member and inflate any
+//    total. Filter once at the source — a Power Query step or the source
+//    query's WHERE — rather than writing the guard into eleven measures.
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Base — kpi_summary
+// ─────────────────────────────────────────────────────────────────────────────
+
+Net Sales Cents = SUM ( fact_order_line[net_sales_cents] )
+
+Net Sales = DIVIDE ( [Net Sales Cents], 100 )
+
+// DISTINCTCOUNT, not COUNTROWS: the fact is one row per order LINE, so
+// counting rows counts lines and overstates orders by the basket size.
+Orders = DISTINCTCOUNT ( fact_order_line[square_order_id] )
+
+Units = SUM ( fact_order_line[quantity] )
+
+Discounts = DIVIDE ( SUM ( fact_order_line[discount_cents] ), 100 )
+
+Tax = DIVIDE ( SUM ( fact_order_line[tax_cents] ), 100 )
+
+Gross Sales = DIVIDE ( SUM ( fact_order_line[gross_sales_cents] ), 100 )
+
+// kpi_summary rounds to whole cents BEFORE the dashboard divides, so the
+// rounding happens at the same place here or the two disagree in the last
+// decimal on roughly half the periods.
+AOV Cents = ROUND ( DIVIDE ( [Net Sales Cents], [Orders] ), 0 )
+
+AOV = DIVIDE ( [AOV Cents], 100 )
+
+Units per Order = ROUND ( DIVIDE ( [Units], [Orders] ), 2 )
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Payments — kpi_summary, kpi_payment_methods
+//
+// These come off fact_payment, which has its own date (pay_date) and therefore
+// its own relationship to dim_date. A payment can settle on a different day
+// from the sale, so the two fact tables are deliberately not forced onto one
+// date column.
+// ─────────────────────────────────────────────────────────────────────────────
+
+Collected Cents = SUM ( fact_payment[amount_cents] )
+
+Collected = DIVIDE ( [Collected Cents], 100 )
+
+Processing Fees = DIVIDE ( SUM ( fact_payment[processing_fee_cents] ), 100 )
+
+// Share of the collected total for whatever is on the axis — tender type, in
+// kpi_payment_methods. REMOVEFILTERS targets only the grouping column, so the
+// date filter survives and the denominator stays the period total rather than
+// all time.
+Collected % of Total =
+DIVIDE (
+    [Collected],
+    CALCULATE ( [Collected], REMOVEFILTERS ( fact_payment[source_type] ) )
+)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Period comparison — replaces dim_period entirely
+//
+// This is the measure worth understanding. dim_period materialises five fixed
+// windows and their prior equivalents at (period_label, key) grain, and five
+// kpi_* models are built against it. Here the window is whatever the slicer
+// selects, the prior window is the same length immediately before it, and the
+// grain is whatever the visual asks for.
+//
+// The IF reproduces dim_period.prior_window_complete: when the prior window
+// starts before the first day of data, the comparison is not supportable and
+// the measure returns BLANK rather than a number computed from a partial
+// window. A visual shows "—"; it does not show a plausible lie.
+// ─────────────────────────────────────────────────────────────────────────────
+
+Net Sales PP =
+VAR SelectedDays = COUNTROWS ( VALUES ( dim_date[date_day] ) )
+VAR PriorStart    = MIN ( dim_date[date_day] ) - SelectedDays
+VAR FirstSaleDate = CALCULATE ( MIN ( fact_order_line[sale_date] ), REMOVEFILTERS () )
+RETURN
+    IF (
+        PriorStart >= FirstSaleDate,
+        CALCULATE ( [Net Sales], DATEADD ( dim_date[date_day], -SelectedDays, DAY ) )
+    )
+
+Orders PP =
+VAR SelectedDays = COUNTROWS ( VALUES ( dim_date[date_day] ) )
+VAR PriorStart    = MIN ( dim_date[date_day] ) - SelectedDays
+VAR FirstSaleDate = CALCULATE ( MIN ( fact_order_line[sale_date] ), REMOVEFILTERS () )
+RETURN
+    IF (
+        PriorStart >= FirstSaleDate,
+        CALCULATE ( [Orders], DATEADD ( dim_date[date_day], -SelectedDays, DAY ) )
+    )
+
+// Expressed as 12.3 meaning 12.3%, rounded to one decimal, to match
+// net_sales_change_pct in SQL. Format the column as a plain number, not as a
+// percentage, or Power BI multiplies by 100 a second time.
+Net Sales Change % =
+VAR Prior = [Net Sales PP]
+RETURN
+    IF (
+        NOT ISBLANK ( Prior ) && Prior <> 0,
+        ROUND ( 100.0 * DIVIDE ( [Net Sales] - Prior, Prior ), 1 )
+    )
+
+// Only honest where more than a year of history exists. The production
+// warehouse spans 383 days, so this returns BLANK across most of its range;
+// the synthetic warehouse is built with 801 days precisely so that it does not.
+Net Sales LY = CALCULATE ( [Net Sales], SAMEPERIODLASTYEAR ( dim_date[date_day] ) )
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Category / item share — kpi_sales_by_category, kpi_item_sales
+// ─────────────────────────────────────────────────────────────────────────────
+
+Net Sales % of Total =
+DIVIDE (
+    [Net Sales],
+    CALCULATE ( [Net Sales], REMOVEFILTERS ( dim_item ) )
+)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rolling average — kpi_daily_sales.net_sales_7d_avg_cents
+//
+// Sum over seven days divided by seven, not AVERAGEX over the days present.
+// kpi_daily_sales is left-joined from the dim_date spine so a day with no
+// sales is a real zero, and averaging only the non-blank days would quietly
+// report a busy-day average instead of a daily one.
+//
+// BLANK until seven days exist, matching the SQL's count guard, so the first
+// week of any extract does not report a short window as if it were a week.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// The cents form is the one that reconciles: SQL rounds to whole cents inside
+// the window function, so rounding has to happen before the divide by 100 here
+// too. Verified equal on all 801 days of the synthetic warehouse.
+Net Sales 7d Avg Cents =
+VAR Window = DATESINPERIOD ( dim_date[date_day], MAX ( dim_date[date_day] ), -7, DAY )
+VAR DaysInWindow = COUNTROWS ( Window )
+RETURN
+    IF (
+        DaysInWindow = 7,
+        ROUND ( DIVIDE ( CALCULATE ( [Net Sales Cents], Window ), 7 ), 0 )
+    )
+
+Net Sales 7d Avg = DIVIDE ( [Net Sales 7d Avg Cents], 100 )
