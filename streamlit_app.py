@@ -8,7 +8,7 @@ this wrapper does the build first, then hands over to the real app unchanged.
 **This demo never touches the store's data, and cannot.** It runs the actual
 pipeline — synthetic Bronze -> Silver transform -> the same 33 dbt models and
 93 tests — against `scripts/generate_synthetic_bronze.py`, a deterministic
-fixture describing a fictional "Synthetic Test Store". No Square credentials
+fixture describing a fictional two-store retailer. No Square credentials
 exist in this environment, nothing reads `data/`, and every figure on screen is
 computed from generated numbers. That is also why the demo is a fair sample of
 the engineering and a useless sample of the business.
