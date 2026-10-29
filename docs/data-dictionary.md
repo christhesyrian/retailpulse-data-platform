@@ -74,7 +74,7 @@ Models marked **period-aware** are built at `(period_label, key)` grain by joini
 | `kpi_item_forecast` | One row per item per future week (next 4) | `forecast_week_start`, `weeks_ahead`, `forecast_units`, `method` (linear_trend / avg_fallback), `weeks_of_history`. Fitted on a **zero-filled** weekly series so quiet weeks count against the trend |
 | `kpi_margin_by_category` | One row per category | Net sales, COGS, gross profit, margin %, cost coverage % (costed lines only; empty without vendor costs) |
 | `kpi_margin_by_vendor` | One row per vendor | Net sales, COGS, gross profit, margin % (empty without vendor costs) |
-| `kpi_inventory_position` | One row per variation | On-hand, units sold (30d), days of inventory, `stock_status`. Built and tested but **not shown in the dashboard** — see README |
+| `kpi_inventory_position` | One row per variation **per location** | `inventory_position_key` (surrogate), on-hand, units sold (30d) *at that location*, days of inventory, `stock_status`. Built and tested but **not shown in the dashboard** — see README. Takes the latest snapshot per (variation, location) explicitly, so the grain holds if snapshots ever accumulate. |
 
 ## Conventions
 
