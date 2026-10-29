@@ -2,6 +2,12 @@ version: 2
 
 sources:
   - name: silver
+    # On DuckDB the `external_location` below wins and this is unused. On
+    # BigQuery and Snowflake the source resolves to a real dataset of this name,
+    # which is what makes a second, fully synthetic copy of the warehouse
+    # possible: the publishable demo builds from `demo_silver` while the real
+    # store's data stays in `silver`, same models, one variable apart.
+    schema: "{{ env_var('RETAILPULSE_SILVER_SCHEMA', 'silver') }}"
     description: >
       RetailPulse Silver layer — deduplicated, flattened Parquet files
       written by src/retailpulse/transform/silver.py. dbt-duckdb reads
@@ -23,6 +29,10 @@ sources:
         description: Latest IN_STOCK count per item variation and location.
 
   - name: reference
+    # Same reason as `silver` above. The split matters more here: vendor costs
+    # are synthetic in the demo and real (and unpublishable) in production, so
+    # the two must never resolve to the same dataset.
+    schema: "{{ env_var('RETAILPULSE_REFERENCE_SCHEMA', 'reference') }}"
     description: >
       Operator-maintained reference data that does NOT come from Square.
       vendor_costs is OPTIONAL — a git-ignored CSV under data/input/ (real

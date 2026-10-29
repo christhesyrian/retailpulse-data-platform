@@ -15,6 +15,10 @@ data/bronze/
 data/silver/
 data/gold/
 data/input/
+# The synthetic warehouse, regenerable with `make demo-warehouse`.
+data/demo/
+# Exported marts for the Power BI model — regenerate with `make powerbi-export`.
+powerbi/data/
 secrets/
 *.pem
 *.key

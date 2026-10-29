@@ -128,12 +128,31 @@ models:
           - unique
 
   - name: kpi_inventory_position
-    description: Current stock position per item with days-of-inventory and reorder signal.
+    description: >
+      Current stock position per item variation per location, with
+      days-of-inventory and a reorder signal. Velocity is that location's own
+      trailing-30-day sales, not the chain's.
     columns:
-      - name: square_catalog_object_id
+      # The uniqueness test moved here from square_catalog_object_id when the
+      # model was regrained. On the old grain `unique` on the variation was the
+      # whole guard; on this one the variation legitimately repeats once per
+      # location, so the constraint belongs on the pair. There is no
+      # dbt_utils in this project to express that directly, and a surrogate key
+      # is what every other mart here uses for the same job.
+      - name: inventory_position_key
         data_tests:
           - not_null
           - unique
+      - name: square_catalog_object_id
+        data_tests:
+          - not_null
+      - name: location_key
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_location')
+                field: location_key
       - name: stock_status
         data_tests:
           - not_null
