@@ -39,8 +39,22 @@ import os
 import sys
 from pathlib import Path
 
+# Which datasets to load into. These are the same two variables dbt reads in
+# models/staging/_sources.yml, and they are read here rather than hard-coded so
+# the loader and the models cannot disagree about where Silver lives — the
+# failure mode otherwise is a build that succeeds against last week's data
+# because only one of the two was pointed somewhere new.
+#
+# Defaults reproduce the original behaviour exactly. Overriding both is how the
+# publishable synthetic warehouse is kept apart from the real store's:
+#
+#   RETAILPULSE_SILVER_SCHEMA=demo_silver \
+#   RETAILPULSE_REFERENCE_SCHEMA=demo_reference \
+#   BIGQUERY_DATASET=demo python3 scripts/load_silver_to_bigquery.py
+SILVER_DATASET = os.environ.get("RETAILPULSE_SILVER_SCHEMA", "silver")
+REFERENCE_DATASET = os.environ.get("RETAILPULSE_REFERENCE_SCHEMA", "reference")
+
 # Silver tables are Parquet; the operator-maintained reference inputs are CSV.
-# Dataset names match the `source` names in models/staging/_sources.yml.
 SILVER_TABLES = [
     "locations",
     "catalog_items",
@@ -125,9 +139,9 @@ def main() -> int:
 
     targets: list[tuple[str, str, Path, str]] = []
     for name in SILVER_TABLES:
-        targets.append(("silver", name, silver_dir / f"{name}.parquet", "PARQUET"))
+        targets.append((SILVER_DATASET, name, silver_dir / f"{name}.parquet", "PARQUET"))
     for name in REFERENCE_TABLES:
-        targets.append(("reference", name, input_dir / f"{name}.csv", "CSV"))
+        targets.append((REFERENCE_DATASET, name, input_dir / f"{name}.csv", "CSV"))
 
     missing = [str(p) for _, _, p, _ in targets if not p.is_file()]
     if missing:
@@ -137,14 +151,14 @@ def main() -> int:
         return 1
 
     client = connect()
-    for dataset in ("silver", "reference"):
+    for dataset in (SILVER_DATASET, REFERENCE_DATASET):
         ensure_dataset(client, f"{client.project}.{dataset}", location)
 
     for dataset, table, path, file_type in targets:
         rows = load_file(client, dataset, table, path, file_type)
         print(f"  loaded {dataset}.{table:<22} {rows:>9,} rows")
 
-    print("\nSilver loaded into BigQuery.")
+    print(f"\nSilver loaded into BigQuery ({SILVER_DATASET}, {REFERENCE_DATASET}).")
     return 0
 
 

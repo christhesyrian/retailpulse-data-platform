@@ -298,4 +298,4 @@ All 126 nodes build green with Silver read from object storage.
 - Slowly-changing dimensions beyond items, if locations or vendors ever start changing
 - A second source: supplier invoices, which forces real entity resolution between invoice text and the Square catalog
 
-See [`docs/project-charter.md`](docs/project-charter.md) for the charter, [`docs/data-dictionary.md`](docs/data-dictionary.md) for the model reference, and [`docs/orchestration.md`](docs/orchestration.md) for the asset graph.
+See [`docs/project-charter.md`](docs/project-charter.md) for the charter, [`docs/data-dictionary.md`](docs/data-dictionary.md) for the model reference, [`docs/orchestration.md`](docs/orchestration.md) for the asset graph, and [`docs/powerbi.md`](docs/powerbi.md) for the Power BI semantic layer and the synthetic warehouse it publishes from.
